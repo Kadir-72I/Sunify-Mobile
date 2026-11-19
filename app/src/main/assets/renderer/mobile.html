@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="tr" data-theme="sunify">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' https: data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline' https:; img-src 'self' https: data: blob: file:; media-src 'self' https: blob: file: http://127.0.0.1:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https: wss:; font-src 'self' https: data:; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+    <title>Sunify Mobile</title>
+    <link rel="stylesheet" href="vendor/fonts/fonts.css" />
+    <link rel="stylesheet" href="vendor/fa/css/all.min.css" />
+    <link rel="stylesheet" href="mobile-app.css" />
+    <link rel="stylesheet" href="sunify-features.css" />
+  </head>
+  <body data-theme="sunify">
+    <!-- Dinamik kapak renkli arka plan parıltısı -->
+    <div class="ambient-bg" aria-hidden="true">
+      <div class="ambient-orb orb-1"></div>
+      <div class="ambient-orb orb-2"></div>
+      <div class="ambient-orb orb-3"></div>
+    </div>
+
+    <!-- Üst Liquid Glass Başlık -->
+    <header class="m-topbar">
+      <div class="m-brand" id="mBrandBtn">
+        <span class="m-brand-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="5" fill="currentColor" />
+            <path
+              d="M12 2V4M12 20V22M4 12H2M22 12H20M5.64 5.64L7.05 7.05M16.95 16.95L18.36 18.36M5.64 18.36L7.05 16.95M16.95 7.05L18.36 5.64"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+          </svg>
+        </span>
+        <span class="m-brand-name">Sunify</span>
+      </div>
+      <div class="m-topbar-actions">
+        <button class="m-icon-pill" id="mTopConnectBtn" type="button" title="Sunify Connect &amp; Jam Odası">
+          <i class="fa-solid fa-tower-broadcast"></i>
+        </button>
+        <button class="m-account-chip" id="mTopAccountBtn" type="button">
+          <i class="fa-solid fa-user"></i>
+          <span id="mTopAccountLabel">Giriş Yap</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Ana Kaydırılabilir İçerik -->
+    <main class="m-main" id="mMain">
+      <!-- 1. ANA SAYFA -->
+      <section class="m-view active" id="viewHome">
+        <div class="m-section">
+          <div class="m-sec-head">
+            <h2><i class="fa-solid fa-compact-disc"></i> Günlük Mixler</h2>
+          </div>
+          <div class="m-hscroll" id="homeDailyMixes"></div>
+        </div>
+
+        <div class="m-section">
+          <div class="m-sec-head">
+            <h2><i class="fa-solid fa-clock-rotate-left"></i> Kaldığın Yerden Devam Et</h2>
+          </div>
+          <div class="m-hscroll" id="homeContinueRow"></div>
+        </div>
+
+        <div class="m-section">
+          <div class="m-sec-head">
+            <h2><i class="fa-solid fa-wand-magic-sparkles"></i> Sana Önerilenler</h2>
+            <button class="m-icon-pill" id="homeRefreshRecsBtn" type="button" title="Yenile">
+              <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
+          </div>
+          <div class="m-chips" id="homeMoodChips">
+            <button class="m-chip active" data-mode="all" type="button">Tümü</button>
+            <button class="m-chip" data-mode="discover" type="button">Keşif</button>
+            <button class="m-chip" data-mode="energetic" type="button">Enerjik</button>
+            <button class="m-chip" data-mode="chill" type="button">Chill</button>
+            <button class="m-chip" id="homeRadioBtn" type="button"><i class="fa-solid fa-radio"></i> Radyo</button>
+          </div>
+          <div class="m-track-list" id="homeRecsList"></div>
+        </div>
+
+        <div class="m-section">
+          <div class="m-sec-head">
+            <h2><i class="fa-solid fa-fire"></i> En Çok Dinlenenler</h2>
+          </div>
+          <div class="m-track-list" id="homeDailyChartList"></div>
+        </div>
+
+        <div class="m-section">
+          <div class="m-sec-head">
+            <h2><i class="fa-solid fa-chart-simple"></i> Dinleme Özeti</h2>
+            <button class="m-glass-btn" id="homeOpenWrappedBtn" type="button">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Özet Kartı
+            </button>
+          </div>
+          <div class="m-stats-grid" id="homeStatsGrid"></div>
+          <div id="homeHeatmapBox"></div>
+        </div>
+      </section>
+
+      <!-- 2. ARAMA -->
+      <section class="m-view" id="viewSearch">
+        <div class="m-search-bar">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="search" id="searchInput" placeholder="Şarkı, sanatçı veya liste ara..." autocomplete="off" />
+          <button class="m-clear-btn" id="searchClearBtn" type="button" hidden><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="m-chips" id="searchFilterChips">
+          <button class="m-chip active" data-filter="tracks" type="button">Şarkılar</button>
+          <button class="m-chip" data-filter="artists" type="button">Sanatçılar</button>
+          <button class="m-chip" data-filter="playlists" type="button">Çalma Listeleri</button>
+        </div>
+        <div class="m-track-list" id="searchResultsList">
+          <div class="m-empty-card">Aramak istediğin şarkı veya sanatçıyı yaz.</div>
+        </div>
+      </section>
+
+      <!-- 3. KİTAPLIK -->
+      <section class="m-view" id="viewLibrary">
+        <div class="m-lib-actions">
+          <button class="m-glass-btn primary" id="libNewPlaylistBtn" type="button">
+            <i class="fa-solid fa-plus"></i> Yeni Liste
+          </button>
+          <button class="m-glass-btn" id="libImportPlaylistBtn" type="button">
+            <i class="fa-solid fa-link"></i> URL İçe Aktar
+          </button>
+          <button class="m-glass-btn" id="libReorderBtn" type="button">
+            <i class="fa-solid fa-arrow-up-arrow-down"></i> Sırala
+          </button>
+        </div>
+        <div class="m-lib-grid" id="libraryGrid"></div>
+      </section>
+
+      <!-- 4. ÇALMA LİSTESİ / MİX DETAY -->
+      <section class="m-view" id="viewDetail">
+        <button class="m-back-btn" id="detailBackBtn" type="button">
+          <i class="fa-solid fa-arrow-left"></i> Geri
+        </button>
+        <div class="m-detail-hero">
+          <img id="detailCover" class="m-detail-cover" alt="Kapak" />
+          <h1 id="detailTitle" class="m-detail-title">Liste</h1>
+          <p id="detailDesc" class="m-detail-desc" hidden></p>
+          <p id="detailSub" class="m-detail-sub">0 parça</p>
+          <div class="m-detail-cta">
+            <button class="m-glass-btn primary" id="detailPlayAllBtn" type="button">
+              <i class="fa-solid fa-play"></i> Tümünü Çal
+            </button>
+            <button class="m-glass-btn" id="detailShuffleBtn" type="button">
+              <i class="fa-solid fa-shuffle"></i> Karıştır
+            </button>
+            <button class="m-glass-btn" id="detailDownloadAllBtn" type="button" title="Listeyi Çevrimdışı İndir">
+              <i class="fa-solid fa-cloud-arrow-down"></i> Tümünü İndir
+            </button>
+            <button class="m-icon-pill" id="detailSaveBtn" type="button" title="Kitaplığa Ekle" hidden>
+              <i class="fa-solid fa-plus"></i>
+            </button>
+            <button class="m-icon-pill" id="detailQueueBtn" type="button" title="Sıraya Ekle">
+              <i class="fa-solid fa-list-ul"></i>
+            </button>
+            <button class="m-icon-pill" id="detailReorderBtn" type="button" title="Şarkıları Sırala" hidden>
+              <i class="fa-solid fa-arrow-up-arrow-down"></i>
+            </button>
+            <button class="m-icon-pill" id="detailRenameBtn" type="button" title="Listeyi Düzenle" hidden>
+              <i class="fa-solid fa-pen"></i>
+            </button>
+            <button class="m-icon-pill danger" id="detailDeleteBtn" type="button" title="Listeyi Sil" hidden>
+              <i class="fa-solid fa-trash-can"></i>
+            </button>
+          </div>
+        </div>
+        <div class="m-search-bar compact">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="search" id="detailFilterInput" placeholder="Listede filtrele..." autocomplete="off" />
+        </div>
+        <div class="m-track-list" id="detailTrackList"></div>
+      </section>
+
+      <!-- 5. SANATÇI PROFİLİ -->
+      <section class="m-view" id="viewArtist">
+        <button class="m-back-btn" id="artistBackBtn" type="button">
+          <i class="fa-solid fa-arrow-left"></i> Geri
+        </button>
+        <div class="m-detail-hero" id="artistHero"></div>
+        <div class="m-track-list" id="artistTracksList"></div>
+      </section>
+
+      <!-- 6. AYARLAR (Android'e Özel Sıfırdan Tasarım) -->
+      <section class="m-view" id="viewSettings">
+        <h1 class="m-page-title">Ayarlar</h1>
+
+        <div class="m-settings-card" id="settingsAccountCard">
+          <div class="m-card-title"><i class="fa-solid fa-user-shield"></i> Hesap &amp; Eşitleme</div>
+          <div id="settingsAccountBody"></div>
+        </div>
+
+        <div class="m-settings-card">
+          <div class="m-card-title"><i class="fa-solid fa-palette"></i> Görünüm (Liquid Glass)</div>
+          <div class="m-setting-row">
+            <span>Tema</span>
+            <div class="m-seg" id="themeSegmented">
+              <button type="button" data-theme-val="sunify" class="active">Sunify</button>
+              <button type="button" data-theme-val="dark">Karanlık</button>
+              <button type="button" data-theme-val="light">Açık</button>
+            </div>
+          </div>
+          <div class="m-setting-row">
+            <span>Vurgu Rengi</span>
+            <div class="m-color-dots" id="accentDots">
+              <button type="button" data-accent="auto" aria-label="Kapak Rengi (Otomatik)">Oto</button>
+              <button type="button" data-accent="#b57aff" style="--c:#b57aff" aria-label="Mor"></button>
+              <button type="button" data-accent="#ec6ad5" style="--c:#ec6ad5" aria-label="Pembe"></button>
+              <button type="button" data-accent="#60a5fa" style="--c:#60a5fa" aria-label="Mavi"></button>
+              <button type="button" data-accent="#34d399" style="--c:#34d399" aria-label="Zümrüt"></button>
+            </div>
+          </div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Canlı Ses Görselleştirici</div>
+              <div class="m-row-sub">Şimdi Çalıyor ekranında ritim çubukları</div>
+            </div>
+            <label class="m-switch">
+              <input type="checkbox" id="settingMobileVisualizer" checked />
+              <span class="m-switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="m-settings-card">
+          <div class="m-card-title"><i class="fa-solid fa-sliders"></i> Ses &amp; Efektler</div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Ekolayzer, Reverb, Slowed &amp; Uyku</div>
+              <div class="m-row-sub">10 bant EQ, hız/perde, crossfade ve zamanlayıcı</div>
+            </div>
+            <button class="m-glass-btn" id="settingsOpenAudioFxBtn" type="button">Aç</button>
+          </div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Yalnızca Wi-Fi'da İndir</div>
+              <div class="m-row-sub">Mobil veriyi korumak için indirmeyi kısıtla</div>
+            </div>
+            <label class="m-switch">
+              <input type="checkbox" id="settingWifiOnlyDl" />
+              <span class="m-switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="m-settings-card">
+          <div class="m-card-title"><i class="fa-solid fa-hard-drive"></i> Depolama &amp; Önbellek</div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Ses Önbelleği</div>
+              <div class="m-row-sub" id="settingsCacheSize">Hesaplanıyor...</div>
+            </div>
+            <button class="m-glass-btn" id="clearCacheBtn" type="button">Temizle</button>
+          </div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">İndirilen Şarkılar</div>
+              <div class="m-row-sub" id="settingsDownloadsSize">Hesaplanıyor...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="m-settings-card">
+          <div class="m-card-title"><i class="fa-solid fa-circle-info"></i> Hakkında</div>
+          <div class="m-setting-row">
+            <span>Sürüm</span>
+            <strong id="settingsVersionText">v1.2.1</strong>
+          </div>
+          <div class="m-setting-row">
+            <span>Ses Motoru</span>
+            <span>NewPipeExtractor (Android)</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Yüzen Liquid Glass Mini Oynatıcı -->
+    <div class="m-mini-player" id="miniPlayer" role="region" aria-label="Mini Oynatıcı">
+      <div class="m-mini-progress"><div class="m-mini-progress-fill" id="miniProgressFill"></div></div>
+      <div class="m-mini-info" id="miniOpenNowPlaying">
+        <img id="miniCover" class="m-mini-cover" alt="Kapak" />
+        <div class="m-mini-text">
+          <div class="m-mini-title" id="miniTitle">Müzik Çalınmıyor</div>
+          <div class="m-mini-artist" id="miniArtist">Sunify</div>
+        </div>
+      </div>
+      <div class="m-mini-controls">
+        <button class="m-mini-btn" id="miniLikeBtn" type="button" aria-label="Beğen"><i class="fa-regular fa-heart"></i></button>
+        <button class="m-mini-play" id="miniPlayBtn" type="button" aria-label="Oynat / Duraklat"><i class="fa-solid fa-play"></i></button>
+        <button class="m-mini-btn" id="miniNextBtn" type="button" aria-label="Sonraki"><i class="fa-solid fa-forward-step"></i></button>
+      </div>
+    </div>
+
+    <!-- Alt 4 Sütunlu Liquid Glass Gezinme Çubuğu -->
+    <nav class="m-dock" aria-label="Ana Gezinme">
+      <button class="m-dock-btn active" data-tab="home" type="button">
+        <i class="fa-solid fa-house"></i>
+        <span>Ana Sayfa</span>
+      </button>
+      <button class="m-dock-btn" data-tab="search" type="button">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <span>Ara</span>
+      </button>
+      <button class="m-dock-btn" data-tab="library" type="button">
+        <i class="fa-solid fa-book-open"></i>
+        <span>Kitaplık</span>
+      </button>
+      <button class="m-dock-btn" data-tab="settings" type="button">
+        <i class="fa-solid fa-gear"></i>
+        <span>Ayarlar</span>
+      </button>
+    </nav>
+
+    <!-- Tam Ekran Şimdi Çalıyor + Şarkı Sözleri -->
+    <div class="m-now-playing" id="nowPlayingModal" aria-hidden="true">
+      <div class="m-np-backdrop" id="npBackdrop" aria-hidden="true"></div>
+      <div class="m-np-header">
+        <button class="m-icon-pill" id="npCloseBtn" type="button" aria-label="Kapat"><i class="fa-solid fa-chevron-down"></i></button>
+        <div class="m-np-tabs">
+          <button class="m-np-tab active" data-np-tab="cover" type="button">Çalan</button>
+          <button class="m-np-tab" data-np-tab="lyrics" type="button">Şarkı Sözleri</button>
+        </div>
+        <button class="m-icon-pill" id="npQueueBtn" type="button" aria-label="Çalma Sırası"><i class="fa-solid fa-list-ul"></i></button>
+      </div>
+
+      <div class="m-np-panel active" id="npCoverPanel">
+        <div class="m-np-art-wrap">
+          <img id="npCover" class="m-np-art" alt="Kapak" />
+          <canvas id="npVisualizerCanvas" class="sfx-np-visualizer"></canvas>
+        </div>
+        <div class="m-np-meta">
+          <div class="m-np-titles">
+            <h2 id="npTitle">Müzik Çalınmıyor</h2>
+            <p id="npArtist">Sunify</p>
+          </div>
+          <button class="m-icon-pill" id="npLikeBtn" type="button" aria-label="Beğen"><i class="fa-regular fa-heart"></i></button>
+        </div>
+        <div class="m-np-seek">
+          <input type="range" id="npSeekSlider" min="0" max="1000" value="0" aria-label="İlerleme" />
+          <div class="m-np-times">
+            <span id="npCurrentTime">0:00</span>
+            <span id="npDuration">0:00</span>
+          </div>
+        </div>
+        <div class="m-np-controls">
+          <button class="m-np-sec" id="npShuffleBtn" type="button" aria-label="Karıştır"><i class="fa-solid fa-shuffle"></i></button>
+          <button class="m-np-sec" id="npPrevBtn" type="button" aria-label="Önceki"><i class="fa-solid fa-backward-step"></i></button>
+          <button class="m-np-play" id="npPlayBtn" type="button" aria-label="Oynat / Duraklat"><i class="fa-solid fa-play"></i></button>
+          <button class="m-np-sec" id="npNextBtn" type="button" aria-label="Sonraki"><i class="fa-solid fa-forward-step"></i></button>
+          <button class="m-np-sec" id="npRepeatBtn" type="button" aria-label="Tekrarla"><i class="fa-solid fa-repeat"></i></button>
+        </div>
+        <div class="m-np-extras">
+          <button class="m-glass-btn" id="npAudioFxBtn" type="button"><i class="fa-solid fa-sliders"></i> Ses &amp; EQ</button>
+          <button class="m-glass-btn" id="npSleepBtn" type="button"><i class="fa-solid fa-moon"></i> Uyku<span class="sfx-sleep-badge" id="npSleepBadge" hidden></span></button>
+          <button class="m-glass-btn" id="npConnectBtn" type="button"><i class="fa-solid fa-tower-broadcast"></i> Cihaz/Jam</button>
+          <button class="m-glass-btn" id="npSaveOfflineBtn" type="button"><i class="fa-solid fa-cloud-arrow-down"></i> İndir</button>
+          <button class="m-glass-btn" id="npAddToPlaylistBtn" type="button"><i class="fa-solid fa-plus"></i> Ekle</button>
+        </div>
+      </div>
+
+      <div class="m-np-panel" id="npLyricsPanel">
+        <div class="m-lyrics-toolbar">
+          <select id="npLyricsSourceSelect" class="m-lyrics-select" aria-label="Şarkı sözü kaynağı">
+            <option value="auto">Otomatik</option>
+            <option value="lrclib">LRCLIB</option>
+            <option value="netease">NetEase</option>
+            <option value="kugou">KuGou</option>
+            <option value="genius">Genius</option>
+            <option value="lyricsovh">LyricsOVH</option>
+            <option value="sarkisozum">ŞarkıSözüm</option>
+          </select>
+          <span class="m-lyrics-badge" id="npLyricsSourceBadge">—</span>
+          <button type="button" class="m-lyrics-mini-btn" id="npLyricsTranslateBtn" title="Türkçe çeviri">TR</button>
+          <button type="button" class="m-lyrics-mini-btn" id="npLyricsCardModeBtn" title="Söz kartı oluştur"><i class="fa-solid fa-image"></i> Kart</button>
+          <div class="m-lyrics-offset">
+            <button type="button" id="npLyricsMinusBtn" aria-label="Gecikme azalt">-0.5s</button>
+            <span id="npLyricsOffsetVal">0.0s</span>
+            <button type="button" id="npLyricsPlusBtn" aria-label="Gecikme artır">+0.5s</button>
+          </div>
+        </div>
+        <div class="sfx-lyric-card-bar" id="npLyricsCardBar" hidden>
+          <span id="npLyricsCardCount">1–4 satır seç (0/4)</span>
+          <div style="display:flex;gap:6px;">
+            <button class="m-glass-btn primary" id="npLyricsCardShareBtn" type="button">Kartı Paylaş</button>
+            <button class="m-glass-btn" id="npLyricsCardCancelBtn" type="button">İptal</button>
+          </div>
+        </div>
+        <div class="m-lyrics-box" id="npLyricsBox">
+          <div class="m-empty-card">Şarkı sözleri yükleniyor...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Çalma Sırası / Giriş / Liste Seçici Alt Sayfası -->
+    <div class="m-sheet-backdrop" id="sheetBackdrop" hidden>
+      <div class="m-sheet" id="sheetCard">
+        <div class="m-sheet-head">
+          <strong id="sheetTitle">Başlık</strong>
+          <button class="m-icon-pill" id="sheetCloseBtn" type="button"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="m-sheet-body" id="sheetBody"></div>
+      </div>
+    </div>
+
+    <div class="m-toast" id="mToast" hidden></div>
+
+    <script src="lyricsTiming.js"></script>
+    <script src="sunify-audio-fx.js"></script>
+    <script src="sunify-realtime.js"></script>
+    <script src="sunify-cards.js"></script>
+    <script src="mobile-app.js"></script>
+  </body>
+</html>

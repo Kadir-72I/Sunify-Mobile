@@ -1,0 +1,345 @@
+/* sunify-features.css — Masaüstü ve Android ortak Liquid Glass bileşen stilleri */
+
+.sfx-heatmap-card {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  box-shadow: var(--glass-highlight, inset 0 1px 0 rgba(255, 255, 255, 0.18));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sfx-heatmap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sfx-streak-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.22);
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.45);
+  font-size: 12.5px;
+  font-weight: 800;
+}
+.sfx-streak-pill i {
+  color: #fb923c;
+}
+
+.sfx-goal-pills {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.sfx-goal-btn {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sfx-goal-btn.active {
+  background: var(--accent, var(--cover-color-solid, #b57aff));
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+}
+
+.sfx-goal-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  opacity: 0.84;
+}
+
+.sfx-goal-bar {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.sfx-goal-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent, var(--cover-color-solid, #b57aff)), #fb923c);
+  transition: width 0.35s ease;
+}
+
+.sfx-heatmap-grid {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.sfx-hm-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.sfx-hm-cell[data-level='1'] {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.25);
+}
+.sfx-hm-cell[data-level='2'] {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.48);
+}
+.sfx-hm-cell[data-level='3'] {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.72);
+}
+.sfx-hm-cell[data-level='4'] {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.96);
+  box-shadow: 0 0 8px rgba(var(--cover-rgb, 181, 122, 255), 0.45);
+}
+
+/* Canlı Ses Görselleştirici */
+.sfx-np-visualizer {
+  width: min(76vw, 310px);
+  height: 36px;
+  display: block;
+  margin: 8px auto 0;
+  pointer-events: none;
+}
+
+.sfx-desktop-visualizer {
+  width: 100%;
+  max-width: 300px;
+  height: 44px;
+  display: block;
+  margin: 10px auto 4px;
+  pointer-events: none;
+}
+
+/* Söz Çevirisi & Kart Seçim Modu */
+.sfx-lyric-tr {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.72em;
+  font-weight: 500;
+  opacity: 0.78;
+  color: rgba(var(--cover-rgb, 210, 190, 255), 0.95);
+}
+
+.sfx-lyrics-selecting .lyric-line,
+.sfx-lyrics-selecting .m-lyric-line {
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.15s ease;
+}
+
+.lyric-line.sfx-lyric-selected,
+.m-lyric-line.sfx-lyric-selected {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.34) !important;
+  border: 1px solid rgba(255, 255, 255, 0.65) !important;
+  transform: scale(1.015);
+}
+
+.sfx-lyric-card-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 14px;
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.24);
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.5);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.sfx-lyric-card-bar[hidden] {
+  display: none;
+}
+
+/* EQ / Efekt / Connect / Jam Sekme ve Kontroller */
+.sfx-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  margin-bottom: 10px;
+}
+.sfx-tab-btn {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sfx-tab-btn.active {
+  background: var(--accent, var(--cover-color-solid, #b57aff));
+  color: #fff;
+}
+
+.sfx-fx-pane {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+.sfx-fx-pane.active {
+  display: flex;
+}
+
+.sfx-preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sfx-pill-btn {
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sfx-pill-btn.active {
+  background: var(--accent, var(--cover-color-solid, #b57aff));
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+}
+
+.sfx-slider-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.sfx-slider-row input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent, var(--cover-color-solid, #b57aff));
+}
+.sfx-slider-row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.sfx-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.sfx-device-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.35);
+}
+.sfx-device-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sfx-device-title {
+  font-size: 13.5px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sfx-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+  display: inline-block;
+}
+.sfx-device-sub {
+  font-size: 12px;
+  opacity: 0.78;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sfx-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sfx-jam-code {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-align: center;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.22);
+  border: 1px dashed rgba(255, 255, 255, 0.38);
+}
+
+.m-detail-desc,
+.pl-description {
+  margin: 2px 0 4px;
+  font-size: 12.5px;
+  opacity: 0.78;
+  max-width: 520px;
+  line-height: 1.4;
+}
+
+.m-track-row.swipe-queue-ready {
+  border-color: #34d399 !important;
+  box-shadow: 0 0 18px rgba(52, 211, 153, 0.36) !important;
+}
+
+.sfx-connect-active {
+  color: #34d399 !important;
+  border-color: rgba(52, 211, 153, 0.55) !important;
+}
+
+.sfx-sleep-badge {
+  font-size: 11px;
+  font-weight: 800;
+  margin-left: 4px;
+  color: #fb923c;
+}
+
+.sfx-reorder-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sfx-pl-cover-preview {
+  width: 86px;
+  height: 86px;
+  border-radius: 16px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
