@@ -375,6 +375,11 @@ class LocalApiServer(
                     jsonResponse(Response.Status.OK, handleTrimMp3(body))
                 }
 
+                uri == "/api/story/progress" -> jsonResponse(
+                    Response.Status.OK,
+                    StoryVideoGenerator.getProgressJson()
+                )
+
                 uri == "/api/story/wrapped-video" -> {
                     val body = readJsonBody(session)
                     val res = StoryVideoGenerator.generateWrappedStoryVideo(context, audioService, body)

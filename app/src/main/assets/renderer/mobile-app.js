@@ -360,6 +360,19 @@
     return out;
   }
 
+  function sanitizeHourLog(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    Object.entries(raw).forEach(([h, sec]) => {
+      const hr = Number(h);
+      const val = Math.floor(Number(sec) || 0);
+      if (Number.isInteger(hr) && hr >= 0 && hr <= 23 && val > 0) {
+        out[String(hr)] = Math.min(val, 86400 * 365);
+      }
+    });
+    return out;
+  }
+
   function normalizeTrackAnalytics(raw) {
     if (!raw || typeof raw !== 'object') return {};
     const source = raw.tracks && typeof raw.tracks === 'object' && !Array.isArray(raw.tracks) ? raw.tracks : raw;
@@ -367,6 +380,10 @@
     Object.entries(source).forEach(([k, val]) => {
       if (k === '__dailyLog') {
         out.__dailyLog = sanitizeDailyLog(val);
+        return;
+      }
+      if (k === '__hourLog') {
+        out.__hourLog = sanitizeHourLog(val);
         return;
       }
       if (k === '__meta' && val && typeof val === 'object') {
@@ -396,6 +413,14 @@
           nextLog[dk] = Math.max(Number(nextLog[dk]) || 0, Number(sec) || 0);
         });
         merged.__dailyLog = sanitizeDailyLog(nextLog);
+        return;
+      }
+      if (k === '__hourLog') {
+        const nextHours = { ...(merged.__hourLog || {}) };
+        Object.entries(val || {}).forEach(([hk, sec]) => {
+          nextHours[hk] = Math.max(Number(nextHours[hk]) || 0, Number(sec) || 0);
+        });
+        merged.__hourLog = sanitizeHourLog(nextHours);
         return;
       }
       if (k === '__meta') {
@@ -570,6 +595,7 @@
   function compactCloudStats(stats) {
     const out = {};
     if (stats?.__dailyLog) out.__dailyLog = sanitizeDailyLog(stats.__dailyLog);
+    if (stats?.__hourLog) out.__hourLog = sanitizeHourLog(stats.__hourLog);
     if (stats?.__meta) out.__meta = stats.__meta;
     if (stats?.__playlistMeta) out.__playlistMeta = sanitizePlaylistMeta(stats.__playlistMeta);
     const entries = Object.entries(stats || {})
@@ -904,6 +930,11 @@
     if (added <= 0 || !state.currentTrack?.title) return;
     state.listenTimeAccumSec -= added;
     window.SunifyCards?.recordDailySeconds(state.listeningStats, added);
+    if (!state.listeningStats.__hourLog || typeof state.listeningStats.__hourLog !== 'object') {
+      state.listeningStats.__hourLog = {};
+    }
+    const hrKey = String(new Date().getHours());
+    state.listeningStats.__hourLog[hrKey] = (Number(state.listeningStats.__hourLog[hrKey]) || 0) + added;
     const k = analyticsKey(state.currentTrack);
     if (!state.listeningStats[k]) return;
     state.listeningStats[k].totalSeconds = (Number(state.listeningStats[k].totalSeconds) || 0) + added;
@@ -2834,27 +2865,202 @@
     });
   }
 
+  let storyProgressTimer = null;
+  let storyProgressEl = null;
+
+  function hideStoryProgressOverlay() {
+    if (storyProgressTimer) {
+      clearInterval(storyProgressTimer);
+      storyProgressTimer = null;
+    }
+    if (storyProgressEl) {
+      storyProgressEl.remove();
+      storyProgressEl = null;
+    }
+  }
+
+  function showStoryProgressOverlay(titleText) {
+    hideStoryProgressOverlay();
+    const el = document.createElement('div');
+    el.className = 'm-story-progress-backdrop';
+    el.innerHTML = `
+      <div class="m-story-progress-card">
+        <div class="m-story-ring-wrap">
+          <div class="m-story-ring-glow"></div>
+          <div class="m-story-ring"></div>
+          <div class="m-story-pct" id="storyProgPct">2%</div>
+        </div>
+        <div class="m-story-title">${escapeHtml(titleText || 'Story Videosu Oluşturuluyor')}</div>
+        <div class="m-story-stage" id="storyProgStage">Hazırlanıyor...</div>
+        <div class="m-story-bar"><div class="m-story-bar-fill" id="storyProgBar"></div></div>
+        <div class="m-story-hint">HD 9:16 video işleniyor, lütfen uygulamadan ayrılma</div>
+      </div>
+    `;
+    document.body.appendChild(el);
+    storyProgressEl = el;
+
+    let lastPct = 2;
+    const poll = async () => {
+      if (!storyProgressEl) return;
+      try {
+        const res = await fetch(`${API}/api/story/progress`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const pct = Math.max(lastPct, Math.min(100, Number(data.percent) || 0));
+        lastPct = pct;
+        const pctEl = storyProgressEl.querySelector('#storyProgPct');
+        const stEl = storyProgressEl.querySelector('#storyProgStage');
+        const barEl = storyProgressEl.querySelector('#storyProgBar');
+        if (pctEl) pctEl.textContent = `${pct}%`;
+        if (stEl && data.stage) stEl.textContent = data.stage;
+        if (barEl) barEl.style.width = `${Math.max(4, pct)}%`;
+      } catch {}
+    };
+    poll();
+    storyProgressTimer = setInterval(poll, 350);
+  }
+
+  function computeWrappedInsights(statsObj) {
+    const weekdayNames = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+    const monthNames = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+    const weekdaySec = [0, 0, 0, 0, 0, 0, 0];
+    const monthSec = new Map();
+    const hourSec = new Array(24).fill(0);
+
+    const dailyLog = statsObj?.__dailyLog && typeof statsObj.__dailyLog === 'object' ? statsObj.__dailyLog : {};
+    Object.entries(dailyLog).forEach(([dayKey, secRaw]) => {
+      const sec = Number(secRaw) || 0;
+      if (sec <= 0) return;
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey);
+      if (!m) return;
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+      if (Number.isNaN(d.getTime())) return;
+      const wdIdx = (d.getDay() + 6) % 7;
+      weekdaySec[wdIdx] += sec;
+      const ymKey = `${m[1]}-${m[2]}`;
+      monthSec.set(ymKey, (monthSec.get(ymKey) || 0) + sec);
+    });
+
+    const hourLog = statsObj?.__hourLog && typeof statsObj.__hourLog === 'object' ? statsObj.__hourLog : {};
+    Object.entries(hourLog).forEach(([hKey, secRaw]) => {
+      const h = Number(hKey);
+      const sec = Number(secRaw) || 0;
+      if (Number.isInteger(h) && h >= 0 && h <= 23 && sec > 0) {
+        hourSec[h] += sec;
+      }
+    });
+
+    const entries = Object.entries(statsObj || {})
+      .filter(([k, v]) => !k.startsWith('__') && v && typeof v === 'object' && v.title)
+      .map(([, v]) => v);
+
+    const uniqueTracks = entries.filter((e) => (Number(e.playCount) || 0) > 0 || (Number(e.totalSeconds) || 0) > 0).length;
+    const artistSet = new Set();
+    entries.forEach((e) => {
+      if (e.artist && ((Number(e.playCount) || 0) > 0 || (Number(e.totalSeconds) || 0) > 0)) {
+        artistSet.add(String(e.artist).trim().toLowerCase());
+      }
+    });
+    const uniqueArtists = artistSet.size;
+
+    const hasDailyData = weekdaySec.some((v) => v > 0);
+    const hasHourData = hourSec.some((v) => v > 0);
+    if (!hasDailyData || !hasHourData) {
+      entries.forEach((e) => {
+        const weight = Math.max(60, Number(e.totalSeconds) || (Number(e.playCount) || 1) * 180);
+        if (e.lastPlayed) {
+          const dt = new Date(e.lastPlayed);
+          if (!Number.isNaN(dt.getTime())) {
+            if (!hasDailyData) {
+              const wdIdx = (dt.getDay() + 6) % 7;
+              weekdaySec[wdIdx] += weight;
+              const ymKey = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+              monthSec.set(ymKey, (monthSec.get(ymKey) || 0) + weight);
+            }
+            if (!hasHourData) {
+              hourSec[dt.getHours()] += weight;
+            }
+          }
+        }
+      });
+    }
+
+    const weekdayMinutes = weekdaySec.map((s) => Math.round(s / 60));
+    let peakWdIdx = 4;
+    let peakWdVal = -1;
+    weekdayMinutes.forEach((v, i) => {
+      if (v > peakWdVal) {
+        peakWdVal = v;
+        peakWdIdx = i;
+      }
+    });
+    const peakWeekday = weekdayNames[peakWdIdx] || 'Cuma';
+
+    const topMonths = [...monthSec.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([ymKey, sec]) => {
+        const parts = ymKey.split('-');
+        const yr = parts[0] || '';
+        const moIdx = Math.max(0, Math.min(11, (Number(parts[1]) || 1) - 1));
+        return { label: `${monthNames[moIdx]} ${yr}`.trim(), minutes: Math.max(1, Math.round(sec / 60)) };
+      });
+    if (!topMonths.length) {
+      const now = new Date();
+      topMonths.push({ label: `${monthNames[now.getMonth()]} ${now.getFullYear()}`, minutes: 1 });
+    }
+
+    let peakHour = new Date().getHours();
+    let peakHourVal = -1;
+    hourSec.forEach((v, h) => {
+      if (v > peakHourVal) {
+        peakHourVal = v;
+        peakHour = h;
+      }
+    });
+    const endHr = (peakHour + 3) % 24;
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const peakHourLabel = `${pad2(peakHour)}:00 – ${pad2(endHr)}:00`;
+    let peakHourMood = 'Akşam Keyfi';
+    if (peakHour >= 5 && peakHour < 12) peakHourMood = 'Sabah Enerjisi';
+    else if (peakHour >= 12 && peakHour < 17) peakHourMood = 'Öğle Ritmi';
+    else if (peakHour >= 17 && peakHour < 22) peakHourMood = 'Akşam Keyfi';
+    else peakHourMood = 'Gece Kuşu';
+
+    return {
+      weekdayMinutes,
+      peakWeekday,
+      topMonths,
+      peakHour,
+      peakHourLabel,
+      peakHourMood,
+      uniqueTracks,
+      uniqueArtists,
+    };
+  }
+
   function openLyricClipStorySheet() {
     const track = state.currentTrack;
     if (!track) return showToast('Önce bir şarkı çalın.');
     const dur = Math.max(20, Math.floor(Number(audio.duration) || Number(track.duration) || 180));
     const initStart = Math.min(Math.max(0, Math.floor(audio.currentTime || 0)), Math.max(0, dur - 15));
-    const initEnd = Math.min(dur, initStart + 15);
+    const initEnd = Math.min(dur, initStart + 20);
 
     openSheet('Sözlü Story Videosu Oluştur (9:16)', () => {
       const wrap = document.createElement('div');
       wrap.className = 'm-auth-form';
       wrap.innerHTML = `
-        <div class="m-row-sub">Üstte albüm kapağı &amp; şarkı adı, ortada senkronize kayan şarkı sözleri, gerçek şarkı sesiyle Instagram Story (.mp4) videosu.</div>
+        <div class="m-row-sub">İstediğin aralığı veya tüm şarkıyı seç — sinematik arka plan, canlı spektrum ve senkronize kayan sözlerle HD (.mp4) video oluştur.</div>
         <div class="m-setting-row"><span>Başlangıç</span><strong id="clipStartLbl">${fmtTime(initStart)}</strong></div>
         <input type="range" id="clipStartSlider" min="0" max="${Math.max(1, dur - 5)}" value="${initStart}" />
-        <div class="m-setting-row"><span>Bitiş (maks. 30 sn)</span><strong id="clipEndLbl">${fmtTime(initEnd)}</strong></div>
+        <div class="m-setting-row"><span>Bitiş (Sınırsız · Tüm Şarkı)</span><strong id="clipEndLbl">${fmtTime(initEnd)}</strong></div>
         <input type="range" id="clipEndSlider" min="5" max="${dur}" value="${initEnd}" />
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="m-glass-btn" id="clipUseCurStart" type="button" style="flex:1;">Başlangıcı Şimdi Yap</button>
           <button class="m-glass-btn" id="clipUseCurEnd" type="button" style="flex:1;">Bitişi Şimdi Yap</button>
+          <button class="m-glass-btn" id="clipFullTrackBtn" type="button" style="flex:1 1 100%;"><i class="fa-solid fa-expand"></i> Tüm Şarkıyı Seç (0:00 – ${fmtTime(dur)})</button>
         </div>
-        <div class="m-row-sub" id="clipLenLbl">Video süresi: ${initEnd - initStart} sn · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Söz bulunamadı (kapak + dalga modu)'}</div>
+        <div class="m-row-sub" id="clipLenLbl">Video süresi: ${fmtTime(initEnd - initStart)} · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Söz bulunamadı (kapak + spektrum modu)'}</div>
         <button class="m-glass-btn primary" id="clipGenerateBtn" type="button"><i class="fa-solid fa-clapperboard"></i> Story Videosu Oluştur &amp; Paylaş</button>
       `;
 
@@ -2864,11 +3070,11 @@
         const sv = Number(sEl.value) || 0;
         let ev = Number(eEl.value) || sv + 15;
         if (ev < sv + 5) ev = Math.min(dur, sv + 5);
-        if (ev > sv + 30) ev = Math.min(dur, sv + 30);
+        if (ev > dur) ev = dur;
         eEl.value = String(ev);
         wrap.querySelector('#clipStartLbl').textContent = fmtTime(sv);
         wrap.querySelector('#clipEndLbl').textContent = fmtTime(ev);
-        wrap.querySelector('#clipLenLbl').textContent = `Video süresi: ${ev - sv} sn · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Kapak + dalga modu'}`;
+        wrap.querySelector('#clipLenLbl').textContent = `Video süresi: ${fmtTime(ev - sv)} · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Kapak + spektrum modu'}`;
       };
       sEl.oninput = syncClip;
       eEl.oninput = syncClip;
@@ -2880,14 +3086,18 @@
         eEl.value = String(Math.floor(audio.currentTime || 0));
         syncClip();
       };
+      wrap.querySelector('#clipFullTrackBtn').onclick = () => {
+        sEl.value = '0';
+        eEl.value = String(dur);
+        syncClip();
+      };
 
       wrap.querySelector('#clipGenerateBtn').onclick = async () => {
         const btn = wrap.querySelector('#clipGenerateBtn');
         const startSec = Number(sEl.value) || 0;
-        const endSec = Math.min(dur, Math.max(startSec + 5, Number(eEl.value) || startSec + 15));
+        const endSec = Math.min(dur, Math.max(startSec + 5, Number(eEl.value) || startSec + 20));
         btn.disabled = true;
-        btn.textContent = 'Story videosu işleniyor...';
-        showToast('HD Story videosu oluşturuluyor (birkaç saniye sürebilir)...');
+        showStoryProgressOverlay('Sözlü Story Videosu');
         try {
           const res = await api('/api/story/lyric-clip-video', {
             method: 'POST',
@@ -2903,16 +3113,18 @@
               lyrics: (state.lyrics || []).map((l) => ({ time: l.time, text: l.text })),
             }),
           });
+          hideStoryProgressOverlay();
           showToast(`Galeriye kaydedildi: ${res.displayPath}`);
           if (bridge?.shareFilePath && res.cachePath) {
             bridge.shareFilePath(res.cachePath, 'video/mp4', `${track.title} Story Videosu`);
           }
           closeSheet();
         } catch (err) {
+          hideStoryProgressOverlay();
           showToast(err.message || 'Story videosu oluşturulamadı.');
         } finally {
+          hideStoryProgressOverlay();
           btn.disabled = false;
-          btn.innerHTML = '<i class="fa-solid fa-clapperboard"></i> Story Videosu Oluştur &amp; Paylaş';
         }
       };
       return wrap;
@@ -3018,24 +3230,29 @@
       });
       const topArtists = [...artistCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, count]) => ({ name, count }));
 
+      const insights = computeWrappedInsights(state.listeningStats);
+      const topMonthLbl = insights.topMonths[0] ? `${insights.topMonths[0].label} (${insights.topMonths[0].minutes} dk)` : '—';
+
       wrap.innerHTML = `
         <div class="m-stats-grid">
-          <div class="m-stat-card"><div class="m-stat-val">${totalMinutes} dk</div><div class="m-stat-lbl">Toplam Süre</div></div>
+          <div class="m-stat-card"><div class="m-stat-val">${totalMinutes} dk</div><div class="m-stat-lbl">Toplam Süre · ${insights.uniqueTracks} parça</div></div>
           <div class="m-stat-card"><div class="m-stat-val">${totalPlays} · ${streak} gün</div><div class="m-stat-lbl">Tam Dinleme &amp; Seri</div></div>
+          <div class="m-stat-card"><div class="m-stat-val">${escapeHtml(insights.peakWeekday)}</div><div class="m-stat-lbl">En Aktif Gün</div></div>
+          <div class="m-stat-card"><div class="m-stat-val">${escapeHtml(insights.peakHourMood)}</div><div class="m-stat-lbl">${escapeHtml(insights.peakHourLabel)}</div></div>
         </div>
+        <div class="m-row-sub" style="text-align:center;">Zirve Ay: <strong>${escapeHtml(topMonthLbl)}</strong> · ${insights.uniqueArtists} farklı sanatçı</div>
         <div class="m-settings-card" style="padding:12px;">
           <div class="m-card-title" style="font-size:13.5px;"><i class="fa-solid fa-crown"></i> En Çok Dinlenen Parçalar</div>
           ${topTracks.length ? topTracks.map((t, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;"><span><strong>${i + 1}.</strong> ${escapeHtml(t.title)}</span><strong>${t.playCount}</strong></div>`).join('') : '<div class="m-empty-card">Henüz tam dinlenen şarkı yok.</div>'}
         </div>
-        <button type="button" class="m-glass-btn primary" id="wrappedVideoBtn"><i class="fa-solid fa-clapperboard"></i> Dinleme Özeti Videosu (Instagram Story .mp4)</button>
+        <button type="button" class="m-glass-btn primary" id="wrappedVideoBtn"><i class="fa-solid fa-clapperboard"></i> 32 sn Sunify Wrapped Videosu (.mp4)</button>
         <button type="button" class="m-glass-btn" id="wrappedShareBtn"><i class="fa-solid fa-image"></i> Özet Kartını Paylaş (PNG)</button>
       `;
 
       wrap.querySelector('#wrappedVideoBtn').onclick = async () => {
         const btn = wrap.querySelector('#wrappedVideoBtn');
         btn.disabled = true;
-        btn.textContent = 'Özet videosu hazırlanıyor...';
-        showToast('Animasyonlu Story videosu oluşturuluyor...');
+        showStoryProgressOverlay('Sunify Wrapped Videosu');
         try {
           const username = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || 'Sunify Dinleyicisi';
           const res = await api('/api/story/wrapped-video', {
@@ -3046,19 +3263,29 @@
               totalMinutes,
               totalPlays,
               streakDays: streak,
+              uniqueTracks: insights.uniqueTracks,
+              uniqueArtists: insights.uniqueArtists,
+              weekdayMinutes: insights.weekdayMinutes,
+              peakWeekday: insights.peakWeekday,
+              topMonths: insights.topMonths,
+              peakHour: insights.peakHour,
+              peakHourLabel: insights.peakHourLabel,
+              peakHourMood: insights.peakHourMood,
               topTracks,
               topArtists,
             }),
           });
+          hideStoryProgressOverlay();
           showToast(`Galeriye kaydedildi: ${res.displayPath}`);
           if (bridge?.shareFilePath && res.cachePath) {
             bridge.shareFilePath(res.cachePath, 'video/mp4', 'Sunify Dinleme Özeti');
           }
         } catch (err) {
+          hideStoryProgressOverlay();
           showToast(err.message || 'Özet videosu oluşturulamadı.');
         } finally {
+          hideStoryProgressOverlay();
           btn.disabled = false;
-          btn.innerHTML = '<i class="fa-solid fa-clapperboard"></i> Dinleme Özeti Videosu (Instagram Story .mp4)';
         }
       };
 
