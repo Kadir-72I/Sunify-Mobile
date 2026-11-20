@@ -10,7 +10,6 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -22,14 +21,12 @@ import android.media.MediaMuxer
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
-import android.os.Process
 import android.provider.MediaStore
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -39,8 +36,9 @@ import kotlin.math.sin
 object StoryVideoGenerator {
     private const val WIDTH = 720
     private const val HEIGHT = 1280
-    private const val FPS = 30
-    private const val BITRATE = 4_200_000
+    private const val FPS = 24
+    private const val BITRATE = 3_600_000
+    private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
 
     data class VideoResult(
         val cacheFile: File,
@@ -53,13 +51,10 @@ object StoryVideoGenerator {
         return if (parts.size == 3) intArrayOf(parts[0], parts[1], parts[2]) else intArrayOf(181, 122, 255)
     }
 
-    private fun fetchBitmap(url: String, maxDim: Int = 512): Bitmap? {
+    private fun fetchBitmap(url: String, maxDim: Int = 420): Bitmap? {
         if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) return null
         return runCatching {
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
-                .build()
+            val req = Request.Builder().url(url).header("User-Agent", UA).build()
             OkHttpDownloader.sharedClient.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return@use null
                 val bytes = res.body?.bytes() ?: return@use null
@@ -71,14 +66,10 @@ object StoryVideoGenerator {
                     inSampleSize = sample
                 }) ?: return@use null
                 val side = min(raw.width, raw.height)
-                val x = (raw.width - side) / 2
-                val y = (raw.height - side) / 2
-                val sq = Bitmap.createBitmap(raw, x, y, side, side)
+                val sq = Bitmap.createBitmap(raw, (raw.width - side) / 2, (raw.height - side) / 2, side, side)
                 if (sq !== raw) raw.recycle()
                 if (side > maxDim) {
-                    Bitmap.createScaledBitmap(sq, maxDim, maxDim, true).also {
-                        if (it !== sq) sq.recycle()
-                    }
+                    Bitmap.createScaledBitmap(sq, maxDim, maxDim, true).also { if (it !== sq) sq.recycle() }
                 } else sq
             }
         }.getOrNull()
@@ -90,58 +81,102 @@ object StoryVideoGenerator {
         return 1f - inv * inv * inv
     }
 
-    private fun easeInOut(t: Float): Float {
-        val c = t.coerceIn(0f, 1f)
-        return c * c * (3f - 2f * c)
-    }
-
-    private fun drawSunifyLogo(canvas: Canvas, cx: Float, cy: Float, radius: Float, rgb: IntArray, alpha: Int = 255) {
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private fun bakeBackgroundBitmap(rgb: IntArray, coverBmp: Bitmap?, dimCoverAlpha: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val bgPaint = Paint().apply {
             shader = LinearGradient(
-                cx - radius, cy - radius, cx + radius, cy + radius,
-                Color.argb(alpha, rgb[0], rgb[1], rgb[2]),
-                Color.argb(alpha, (rgb[0] * 0.45f).toInt(), (rgb[1] * 0.35f).toInt(), (rgb[2] * 0.85f).toInt().coerceAtMost(255)),
+                0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(),
+                intArrayOf(
+                    Color.rgb((rgb[0] * 0.18f).toInt().coerceAtLeast(14), (rgb[1] * 0.12f).toInt().coerceAtLeast(10), (rgb[2] * 0.26f).toInt().coerceAtLeast(24)),
+                    Color.rgb(9, 8, 16),
+                    Color.rgb((rgb[0] * 0.22f).toInt().coerceAtLeast(18), (rgb[1] * 0.10f).toInt().coerceAtLeast(12), (rgb[2] * 0.28f).toInt().coerceAtLeast(26))
+                ),
+                floatArrayOf(0f, 0.52f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
-        canvas.drawCircle(cx, cy, radius, bgPaint)
+        c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bgPaint)
+
+        if (coverBmp != null && dimCoverAlpha > 0) {
+            // Hızlı hafif blur etkisi için küçük boyuta ölçekleyip geri büyüt (GPU/CPU maliyeti ~1ms)
+            val tiny = Bitmap.createScaledBitmap(coverBmp, 24, 24, true)
+            val drawW = HEIGHT * 1.14f
+            val dx = (WIDTH - drawW) / 2f
+            val dy = (HEIGHT - drawW) / 2f
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = dimCoverAlpha }
+            c.drawBitmap(tiny, null, RectF(dx, dy, dx + drawW, dy + drawW), p)
+            tiny.recycle()
+            c.drawColor(Color.argb(165, 10, 8, 18))
+        }
+        return bmp
+    }
+
+    private fun bakeOrbBitmap(colorInt: Int, size: Int = 256): Bitmap {
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val r = size / 2f
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(r, r, r, intArrayOf(colorInt, Color.TRANSPARENT), null, Shader.TileMode.CLAMP)
+        }
+        c.drawCircle(r, r, r, p)
+        return bmp
+    }
+
+    private fun bakeRoundedCover(coverBmp: Bitmap, size: Int, radius: Float): Bitmap {
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val rect = RectF(0f, 0f, size.toFloat(), size.toFloat())
+        val path = Path().apply { addRoundRect(rect, radius, radius, Path.Direction.CW) }
+        c.clipPath(path)
+        c.drawBitmap(coverBmp, null, rect, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        return out
+    }
+
+    private fun bakeSunifyLogoBitmap(rgb: IntArray, size: Int = 180): Bitmap {
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val cx = size / 2f
+        val cy = size / 2f
+        val radius = size * 0.46f
+
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                Color.rgb(rgb[0], rgb[1], rgb[2]),
+                Color.rgb((rgb[0] * 0.45f).toInt(), (rgb[1] * 0.35f).toInt(), (rgb[2] * 0.85f).toInt().coerceAtMost(255)),
+                Shader.TileMode.CLAMP
+            )
+        }
+        c.drawCircle(cx, cy, radius, bgPaint)
 
         val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = radius * 0.08f
-            color = Color.argb((alpha * 0.65f).toInt(), 255, 255, 255)
+            color = Color.argb(170, 255, 255, 255)
         }
-        canvas.drawCircle(cx, cy, radius * 0.94f, ringPaint)
+        c.drawCircle(cx, cy, radius * 0.94f, ringPaint)
 
         val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             strokeWidth = radius * 0.14f
-            color = Color.argb(alpha, 255, 255, 255)
+            color = Color.WHITE
         }
         val barHeights = floatArrayOf(0.28f, 0.56f, 0.82f, 0.52f, 0.26f)
         val spacing = radius * 0.28f
         for (i in barHeights.indices) {
             val bx = cx + (i - 2) * spacing
             val halfH = radius * barHeights[i] * 0.48f
-            canvas.drawLine(bx, cy - halfH, bx, cy + halfH, wavePaint)
+            c.drawLine(bx, cy - halfH, bx, cy + halfH, wavePaint)
         }
-    }
-
-    private fun drawRoundedBitmap(canvas: Canvas, bmp: Bitmap, rect: RectF, radius: Float) {
-        val save = canvas.save()
-        val path = Path().apply { addRoundRect(rect, radius, radius, Path.Direction.CW) }
-        canvas.clipPath(path)
-        canvas.drawBitmap(bmp, null, rect, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
-        canvas.restoreToCount(save)
+        return out
     }
 
     private fun ellipsize(paint: Paint, text: String, maxWidth: Float): String {
         if (paint.measureText(text) <= maxWidth) return text
         var s = text
-        while (s.length > 2 && paint.measureText("$s…") > maxWidth) {
-            s = s.dropLast(1)
-        }
+        while (s.length > 2 && paint.measureText("$s…") > maxWidth) s = s.dropLast(1)
         return "$s…"
     }
 
@@ -152,63 +187,14 @@ object StoryVideoGenerator {
         var cur = ""
         for (w in words) {
             val cand = if (cur.isEmpty()) w else "$cur $w"
-            if (paint.measureText(cand) <= maxWidth) {
-                cur = cand
-            } else {
+            if (paint.measureText(cand) <= maxWidth) cur = cand
+            else {
                 if (cur.isNotEmpty()) out.add(cur)
                 cur = w
             }
         }
         if (cur.isNotEmpty()) out.add(cur)
         return out
-    }
-
-    private fun drawAnimatedBg(canvas: Canvas, tSec: Float, rgb: IntArray, coverBmp: Bitmap?, dimCoverAlpha: Int = 55) {
-        val bgPaint = Paint().apply {
-            shader = LinearGradient(
-                0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(),
-                intArrayOf(
-                    Color.rgb((rgb[0] * 0.16f).toInt().coerceAtLeast(14), (rgb[1] * 0.12f).toInt().coerceAtLeast(10), (rgb[2] * 0.24f).toInt().coerceAtLeast(24)),
-                    Color.rgb(9, 8, 16),
-                    Color.rgb((rgb[0] * 0.20f).toInt().coerceAtLeast(18), (rgb[1] * 0.10f).toInt().coerceAtLeast(12), (rgb[2] * 0.26f).toInt().coerceAtLeast(26))
-                ),
-                floatArrayOf(0f, 0.52f, 1f),
-                Shader.TileMode.CLAMP
-            )
-        }
-        canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bgPaint)
-
-        if (coverBmp != null && dimCoverAlpha > 0) {
-            val scale = 1.12f + 0.04f * sin(tSec * 0.7f)
-            val drawW = HEIGHT * scale
-            val dx = (WIDTH - drawW) / 2f
-            val dy = (HEIGHT - drawW) / 2f
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = dimCoverAlpha }
-            canvas.drawBitmap(coverBmp, null, RectF(dx, dy, dx + drawW, dy + drawW), p)
-            canvas.drawColor(Color.argb(175, 10, 8, 18))
-        }
-
-        val ox1 = WIDTH * 0.22f + cos(tSec * 0.8f) * 80f
-        val oy1 = HEIGHT * 0.20f + sin(tSec * 0.6f) * 65f
-        val orb1 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                ox1, oy1, 420f,
-                intArrayOf(Color.argb(135, rgb[0], rgb[1], rgb[2]), Color.TRANSPARENT),
-                null, Shader.TileMode.CLAMP
-            )
-        }
-        canvas.drawCircle(ox1, oy1, 420f, orb1)
-
-        val ox2 = WIDTH * 0.80f + sin(tSec * 0.7f) * 75f
-        val oy2 = HEIGHT * 0.78f + cos(tSec * 0.9f) * 70f
-        val orb2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                ox2, oy2, 400f,
-                intArrayOf(Color.argb(110, (rgb[0] * 0.85f).toInt(), (rgb[1] * 0.6f).toInt(), 255), Color.TRANSPARENT),
-                null, Shader.TileMode.CLAMP
-            )
-        }
-        canvas.drawCircle(ox2, oy2, 400f, orb2)
     }
 
     private fun saveVideoToGallery(context: Context, srcFile: File, fileName: String): String {
@@ -242,17 +228,80 @@ object StoryVideoGenerator {
         return fileName
     }
 
+    private fun openAacExtractor(
+        context: Context,
+        audioService: YouTubeAudioService,
+        id: String,
+        title: String,
+        artist: String
+    ): Pair<MediaExtractor?, File?> {
+        val streamUrl = runCatching {
+            audioService.resolveAudioStream(id.ifBlank { "$artist $title" }, title, artist).url
+        }.getOrNull() ?: return null to null
+
+        // 1. Önce HTTP Range ile doğrudan URL'den aç (tüm şarkıyı indirmeden sadece 15 sn çeker!)
+        val directEx = runCatching {
+            val ex = MediaExtractor()
+            ex.setDataSource(streamUrl, mapOf("User-Agent" to UA))
+            var idx = -1
+            for (i in 0 until ex.trackCount) {
+                if (ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME).equals("audio/mp4a-latm", true)) {
+                    idx = i
+                    break
+                }
+            }
+            if (idx >= 0) {
+                ex.selectTrack(idx)
+                ex
+            } else {
+                ex.release()
+                null
+            }
+        }.getOrNull()
+        if (directEx != null) return directEx to null
+
+        // 2. Fallback: Kısa akışı geçici dosyaya indir
+        val tmpFile = runCatching {
+            val tmp = File(context.cacheDir, "story_audio_${System.currentTimeMillis()}.m4a")
+            val req = Request.Builder().url(streamUrl).header("User-Agent", UA).build()
+            OkHttpDownloader.streamClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return@use null
+                res.body?.byteStream()?.use { ins ->
+                    tmp.outputStream().buffered(65536).use { ins.copyTo(it, 65536) }
+                }
+            }
+            if (tmp.exists() && tmp.length() > 4096L) tmp else null
+        }.getOrNull() ?: return null to null
+
+        val fileEx = runCatching {
+            val ex = MediaExtractor()
+            ex.setDataSource(tmpFile.absolutePath)
+            var idx = -1
+            for (i in 0 until ex.trackCount) {
+                if (ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME).equals("audio/mp4a-latm", true)) {
+                    idx = i
+                    break
+                }
+            }
+            if (idx >= 0) {
+                ex.selectTrack(idx)
+                ex
+            } else {
+                ex.release()
+                null
+            }
+        }.getOrNull()
+        return fileEx to tmpFile
+    }
+
     private fun renderAndMuxVideo(
         context: Context,
         durationSec: Double,
-        audioSourceFile: File?,
+        audioExtractor: MediaExtractor?,
         audioStartSec: Double,
         fileName: String,
         drawFrame: (canvas: Canvas, tSec: Float, progress: Float) -> Unit
     ): VideoResult {
-        val prevPriority = runCatching { Process.getThreadPriority(Process.myTid()) }.getOrDefault(Process.THREAD_PRIORITY_DEFAULT)
-        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
-
         val storiesDir = File(context.cacheDir, "stories").apply { mkdirs() }
         val outFile = File(storiesDir, "story_${System.currentTimeMillis()}.mp4")
 
@@ -261,30 +310,16 @@ object StoryVideoGenerator {
 
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
-        var audioExtractor: MediaExtractor? = null
         var muxerStarted = false
 
         try {
             var audioFormat: MediaFormat? = null
-            var audioTrackInExtractor = -1
-            if (audioSourceFile != null && audioSourceFile.exists() && audioSourceFile.length() > 4096L) {
-                runCatching {
-                    val ex = MediaExtractor()
-                    ex.setDataSource(audioSourceFile.absolutePath)
-                    for (i in 0 until ex.trackCount) {
-                        val fmt = ex.getTrackFormat(i)
-                        val mime = fmt.getString(MediaFormat.KEY_MIME).orEmpty()
-                        if (mime.equals("audio/mp4a-latm", ignoreCase = true)) {
-                            audioTrackInExtractor = i
-                            audioFormat = fmt
-                            break
-                        }
-                    }
-                    if (audioTrackInExtractor >= 0) {
-                        ex.selectTrack(audioTrackInExtractor)
-                        audioExtractor = ex
-                    } else {
-                        ex.release()
+            if (audioExtractor != null) {
+                for (i in 0 until audioExtractor.trackCount) {
+                    val fmt = audioExtractor.getTrackFormat(i)
+                    if (fmt.getString(MediaFormat.KEY_MIME).equals("audio/mp4a-latm", true)) {
+                        audioFormat = fmt
+                        break
                     }
                 }
             }
@@ -305,11 +340,14 @@ object StoryVideoGenerator {
             var videoTrackIndex = -1
             var audioTrackIndex = -1
             val bufferInfo = MediaCodec.BufferInfo()
+            val frameDurationUs = 1_000_000L / FPS
+            var writtenVideoFrames = 0L
 
             fun drainEncoder(endOfStream: Boolean) {
                 if (endOfStream) encoder.signalEndOfInputStream()
+                val timeoutUs = if (endOfStream) 5_000L else 0L
                 while (true) {
-                    val outIdx = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                    val outIdx = encoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
                     when {
                         outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             if (!endOfStream) break
@@ -330,6 +368,8 @@ object StoryVideoGenerator {
                             ) {
                                 encoded.position(bufferInfo.offset)
                                 encoded.limit(bufferInfo.offset + bufferInfo.size)
+                                bufferInfo.presentationTimeUs = writtenVideoFrames * frameDurationUs
+                                writtenVideoFrames++
                                 muxer.writeSampleData(videoTrackIndex, encoded, bufferInfo)
                             }
                             val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
@@ -359,37 +399,34 @@ object StoryVideoGenerator {
             inputSurface.release()
 
             if (muxerStarted && audioTrackIndex >= 0 && audioExtractor != null) {
-                val ex = audioExtractor!!
                 val startUs = (audioStartSec.coerceAtLeast(0.0) * 1_000_000.0).toLong()
                 val maxDurUs = (safeDur * 1_000_000.0).toLong()
-                if (startUs > 0L) ex.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                val firstPts = ex.sampleTime.coerceAtLeast(0L)
+                if (startUs > 0L) audioExtractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                val firstPts = audioExtractor.sampleTime.coerceAtLeast(0L)
                 val audioBuf = ByteBuffer.allocate(256 * 1024)
                 val aInfo = MediaCodec.BufferInfo()
                 while (true) {
-                    val sampleSize = ex.readSampleData(audioBuf, 0)
+                    val sampleSize = audioExtractor.readSampleData(audioBuf, 0)
                     if (sampleSize < 0) break
-                    val pts = ex.sampleTime
+                    val pts = audioExtractor.sampleTime
                     val relPts = (pts - firstPts).coerceAtLeast(0L)
                     if (relPts > maxDurUs) break
                     aInfo.offset = 0
                     aInfo.size = sampleSize
                     aInfo.presentationTimeUs = relPts
-                    aInfo.flags = ex.sampleFlags
+                    aInfo.flags = audioExtractor.sampleFlags
                     muxer.writeSampleData(audioTrackIndex, audioBuf, aInfo)
-                    ex.advance()
+                    audioExtractor.advance()
                 }
             }
 
             val displayPath = saveVideoToGallery(context, outFile, fileName)
             return VideoResult(outFile, fileName, displayPath)
         } finally {
-            runCatching { audioExtractor?.release() }
             runCatching { encoder?.stop() }
             runCatching { encoder?.release() }
             if (muxerStarted) runCatching { muxer?.stop() }
             runCatching { muxer?.release() }
-            runCatching { Process.setThreadPriority(prevPriority) }
         }
     }
 
@@ -407,9 +444,7 @@ object StoryVideoGenerator {
         val topArtistsArr = payload.optJSONArray("topArtists") ?: JSONArray()
 
         val topTracks = mutableListOf<JSONObject>()
-        for (i in 0 until min(5, topTracksArr.length())) {
-            topTracksArr.optJSONObject(i)?.let { topTracks.add(it) }
-        }
+        for (i in 0 until min(5, topTracksArr.length())) topTracksArr.optJSONObject(i)?.let { topTracks.add(it) }
         val topArtists = mutableListOf<Pair<String, Int>>()
         for (i in 0 until min(4, topArtistsArr.length())) {
             val a = topArtistsArr.optJSONObject(i) ?: continue
@@ -417,17 +452,15 @@ object StoryVideoGenerator {
         }
 
         val firstTrack = topTracks.firstOrNull()
-        val topCoverBmp = firstTrack?.optString("thumbnail").orEmpty().let { fetchBitmap(it, 480) }
-        var tempAudio: File? = null
-        if (firstTrack != null) {
-            tempAudio = downloadTempAacAudio(
-                context,
-                audioService,
-                firstTrack.optString("id"),
-                firstTrack.optString("title"),
-                firstTrack.optString("artist")
-            )
-        }
+        val topCoverRaw = firstTrack?.optString("thumbnail").orEmpty().let { fetchBitmap(it, 420) }
+        val topCoverRounded = topCoverRaw?.let { bakeRoundedCover(it, 400, 42f) }
+        val prebakedBg = bakeBackgroundBitmap(coverRgb, topCoverRaw, 52)
+        val orb1Bmp = bakeOrbBitmap(Color.argb(125, coverRgb[0], coverRgb[1], coverRgb[2]), 256)
+        val orb2Bmp = bakeOrbBitmap(Color.argb(100, (coverRgb[0] * 0.85f).toInt(), (coverRgb[1] * 0.6f).toInt(), 255), 256)
+        val logoBmp = bakeSunifyLogoBitmap(coverRgb, 180)
+        val (audioEx, tmpAudio) = if (firstTrack != null) {
+            openAacExtractor(context, audioService, firstTrack.optString("id"), firstTrack.optString("title"), firstTrack.optString("artist"))
+        } else null to null
 
         val personality = when {
             totalMinutes >= 600 -> "Müzik Tutkunu"
@@ -436,40 +469,47 @@ object StoryVideoGenerator {
             else -> "Sunify Gezgini"
         }
 
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(200, 255, 255, 255)
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-        }
-        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2])
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(205, 255, 255, 255); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val cardFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val cardStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
+        val barBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+        val barFgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val tmpRect = RectF()
+        val segTimes = floatArrayOf(0f, 2.8f, 5.8f, 9.0f, 12.4f, 15.0f)
+        val barW = (WIDTH - 64f - 4 * 8f) / 5f
+        val footerLogoRect = RectF(54f, HEIGHT - 94f, 98f, HEIGHT - 50f)
 
         try {
             return renderAndMuxVideo(
                 context = context,
                 durationSec = 15.0,
-                audioSourceFile = tempAudio,
+                audioExtractor = audioEx,
                 audioStartSec = 25.0,
                 fileName = "Sunify-Dinleme-Ozeti-${System.currentTimeMillis()}.mp4"
             ) { canvas, tSec, _ ->
-                drawAnimatedBg(canvas, tSec, coverRgb, topCoverBmp, 42)
+                canvas.drawBitmap(prebakedBg, 0f, 0f, null)
 
-                // Üst şık hikaye ilerleme çubukları (5 sahne)
-                val segTimes = floatArrayOf(0f, 2.8f, 5.8f, 9.0f, 12.4f, 15.0f)
-                val barW = (WIDTH - 64f - 4 * 8f) / 5f
+                val ox1 = WIDTH * 0.22f + cos(tSec * 0.8f) * 75f
+                val oy1 = HEIGHT * 0.20f + sin(tSec * 0.6f) * 60f
+                tmpRect.set(ox1 - 360f, oy1 - 360f, ox1 + 360f, oy1 + 360f)
+                canvas.drawBitmap(orb1Bmp, null, tmpRect, null)
+
+                val ox2 = WIDTH * 0.80f + sin(tSec * 0.7f) * 70f
+                val oy2 = HEIGHT * 0.78f + cos(tSec * 0.9f) * 65f
+                tmpRect.set(ox2 - 340f, oy2 - 340f, ox2 + 340f, oy2 + 340f)
+                canvas.drawBitmap(orb2Bmp, null, tmpRect, null)
+
                 for (s in 0 until 5) {
                     val bx = 32f + s * (barW + 8f)
-                    val bgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
-                    canvas.drawRoundRect(RectF(bx, 42f, bx + barW, 48f), 3f, 3f, bgP)
+                    tmpRect.set(bx, 42f, bx + barW, 48f)
+                    canvas.drawRoundRect(tmpRect, 3f, 3f, barBgPaint)
                     val segProg = ((tSec - segTimes[s]) / (segTimes[s + 1] - segTimes[s])).coerceIn(0f, 1f)
                     if (segProg > 0f) {
-                        val fgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-                        canvas.drawRoundRect(RectF(bx, 42f, bx + barW * segProg, 48f), 3f, 3f, fgP)
+                        tmpRect.set(bx, 42f, bx + barW * segProg, 48f)
+                        canvas.drawRoundRect(tmpRect, 3f, 3f, barFgPaint)
                     }
                 }
 
@@ -477,133 +517,86 @@ object StoryVideoGenerator {
                     tSec < 2.8f -> {
                         val p = easeOutCubic(tSec / 1.1f)
                         val pulse = 1f + 0.04f * sin(tSec * 4.5f)
-                        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            shader = RadialGradient(
-                                WIDTH / 2f, 470f, 220f * pulse,
-                                intArrayOf(Color.argb(140, coverRgb[0], coverRgb[1], coverRgb[2]), Color.TRANSPARENT),
-                                null, Shader.TileMode.CLAMP
-                            )
-                        }
-                        canvas.drawCircle(WIDTH / 2f, 470f, 220f * pulse, glow)
-                        drawSunifyLogo(canvas, WIDTH / 2f, 470f, 88f * p * pulse, coverRgb, (255 * p).toInt())
+                        val r = 92f * p * pulse
+                        bmpPaint.alpha = (255 * p).toInt()
+                        tmpRect.set(WIDTH / 2f - r, 470f - r, WIDTH / 2f + r, 470f + r)
+                        canvas.drawBitmap(logoBmp, null, tmpRect, bmpPaint)
+                        bmpPaint.alpha = 255
 
-                        titlePaint.textAlign = Paint.Align.CENTER
-                        titlePaint.textSize = 54f
-                        titlePaint.alpha = (255 * p).toInt()
+                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 54f; titlePaint.alpha = (255 * p).toInt()
                         canvas.drawText("SUNIFY", WIDTH / 2f, 640f + (1f - p) * 40f, titlePaint)
 
-                        accentPaint.textAlign = Paint.Align.CENTER
-                        accentPaint.textSize = 36f
+                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 36f
                         accentPaint.alpha = (255 * easeOutCubic((tSec - 0.35f) / 0.8f)).toInt()
                         canvas.drawText("DİNLEME ÖZETİN", WIDTH / 2f, 704f, accentPaint)
 
-                        val badgeAlpha = (255 * easeOutCubic((tSec - 0.7f) / 0.8f)).toInt()
-                        val pillRect = RectF(160f, 770f, WIDTH - 160f, 842f)
-                        canvas.drawRoundRect(pillRect, 36f, 36f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            color = Color.argb((badgeAlpha * 0.16f).toInt(), 255, 255, 255)
-                        })
-                        subPaint.textAlign = Paint.Align.CENTER
-                        subPaint.textSize = 28f
-                        subPaint.alpha = badgeAlpha
+                        val ba = (255 * easeOutCubic((tSec - 0.7f) / 0.8f)).toInt()
+                        tmpRect.set(160f, 770f, WIDTH - 160f, 842f)
+                        cardFillPaint.color = Color.argb((ba * 0.16f).toInt(), 255, 255, 255)
+                        canvas.drawRoundRect(tmpRect, 36f, 36f, cardFillPaint)
+                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 28f; subPaint.alpha = ba
                         canvas.drawText(ellipsize(subPaint, username, 340f), WIDTH / 2f, 816f, subPaint)
                     }
 
                     tSec < 5.8f -> {
                         val lt = tSec - 2.8f
                         val p = easeOutCubic(lt / 0.9f)
-                        accentPaint.textAlign = Paint.Align.LEFT
-                        accentPaint.textSize = 26f
-                        accentPaint.alpha = (255 * p).toInt()
+                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 26f; accentPaint.alpha = (255 * p).toInt()
                         canvas.drawText("SENİN RİTMİN", 64f, 190f, accentPaint)
-
-                        titlePaint.textAlign = Paint.Align.LEFT
-                        titlePaint.textSize = 48f
-                        titlePaint.alpha = (255 * p).toInt()
+                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 48f; titlePaint.alpha = (255 * p).toInt()
                         canvas.drawText("Müziğe Ayırdığın Zaman", 64f, 258f, titlePaint)
 
                         val countP = easeOutCubic(lt / 1.4f)
-                        val cards = listOf(
-                            Triple("${(totalMinutes * countP).toInt()} dk", "TOPLAM DİNLEME SÜRESİ", 360f),
-                            Triple("${(totalPlays * countP).toInt()}", "TAMAMLANAN ŞARKI", 590f),
-                            Triple("${(streakDays * countP).toInt()} gün", "AKTİF SERİ", 820f)
-                        )
-                        cards.forEachIndexed { idx, (bigVal, label, topY) ->
+                        val vals = arrayOf("${(totalMinutes * countP).toInt()} dk", "${(totalPlays * countP).toInt()}", "${(streakDays * countP).toInt()} gün")
+                        val labels = arrayOf("TOPLAM DİNLEME SÜRESİ", "TAMAMLANAN ŞARKI", "AKTİF SERİ")
+                        val tops = floatArrayOf(360f, 590f, 820f)
+                        for (idx in 0 until 3) {
                             val cp = easeOutCubic((lt - idx * 0.22f) / 0.7f)
                             val slide = (1f - cp) * 70f
-                            val cardRect = RectF(64f + slide, topY, WIDTH - 64f + slide, topY + 188f)
-                            canvas.drawRoundRect(cardRect, 32f, 32f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                                color = Color.argb((cp * 36f).toInt(), 255, 255, 255)
-                            })
-                            canvas.drawRoundRect(cardRect, 32f, 32f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                                style = Paint.Style.STROKE
-                                strokeWidth = 2f
-                                color = Color.argb((cp * 115f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                            })
-                            titlePaint.textSize = 68f
-                            titlePaint.alpha = (255 * cp).toInt()
-                            canvas.drawText(bigVal, cardRect.left + 36f, topY + 96f, titlePaint)
+                            tmpRect.set(64f + slide, tops[idx], WIDTH - 64f + slide, tops[idx] + 188f)
+                            cardFillPaint.color = Color.argb((cp * 36f).toInt(), 255, 255, 255)
+                            canvas.drawRoundRect(tmpRect, 32f, 32f, cardFillPaint)
+                            cardStrokePaint.color = Color.argb((cp * 115f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
+                            canvas.drawRoundRect(tmpRect, 32f, 32f, cardStrokePaint)
 
-                            subPaint.textAlign = Paint.Align.LEFT
-                            subPaint.textSize = 22f
-                            subPaint.alpha = (200 * cp).toInt()
-                            canvas.drawText(label, cardRect.left + 36f, topY + 148f, subPaint)
+                            titlePaint.textSize = 68f; titlePaint.alpha = (255 * cp).toInt()
+                            canvas.drawText(vals[idx], tmpRect.left + 36f, tops[idx] + 96f, titlePaint)
+                            subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 22f; subPaint.alpha = (200 * cp).toInt()
+                            canvas.drawText(labels[idx], tmpRect.left + 36f, tops[idx] + 148f, subPaint)
                         }
                     }
 
                     tSec < 9.0f -> {
                         val lt = tSec - 5.8f
                         val p = easeOutCubic(lt / 0.85f)
-                        accentPaint.textAlign = Paint.Align.CENTER
-                        accentPaint.textSize = 26f
-                        accentPaint.alpha = (255 * p).toInt()
+                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 26f; accentPaint.alpha = (255 * p).toInt()
                         canvas.drawText("ZİRVEDEKİ PARÇAN", WIDTH / 2f, 180f, accentPaint)
-
-                        titlePaint.textAlign = Paint.Align.CENTER
-                        titlePaint.textSize = 46f
-                        titlePaint.alpha = (255 * p).toInt()
+                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 46f; titlePaint.alpha = (255 * p).toInt()
                         canvas.drawText("En Çok Dinlediğin Şarkı", WIDTH / 2f, 242f, titlePaint)
 
                         val artSize = 400f * (0.78f + 0.22f * p)
                         val artLeft = (WIDTH - artSize) / 2f
-                        val artTop = 320f
-                        val artRect = RectF(artLeft, artTop, artLeft + artSize, artTop + artSize)
-
-                        val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            shader = RadialGradient(
-                                WIDTH / 2f, artTop + artSize / 2f, artSize * 0.72f,
-                                intArrayOf(Color.argb(150, coverRgb[0], coverRgb[1], coverRgb[2]), Color.TRANSPARENT),
-                                null, Shader.TileMode.CLAMP
-                            )
-                        }
-                        canvas.drawCircle(WIDTH / 2f, artTop + artSize / 2f, artSize * 0.72f, halo)
-
-                        if (topCoverBmp != null) {
-                            drawRoundedBitmap(canvas, topCoverBmp, artRect, 42f)
+                        tmpRect.set(artLeft, 320f, artLeft + artSize, 320f + artSize)
+                        if (topCoverRounded != null) {
+                            canvas.drawBitmap(topCoverRounded, null, tmpRect, bmpPaint)
                         } else {
-                            canvas.drawRoundRect(artRect, 42f, 42f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                                color = Color.argb(120, coverRgb[0], coverRgb[1], coverRgb[2])
-                            })
+                            cardFillPaint.color = Color.argb(120, coverRgb[0], coverRgb[1], coverRgb[2])
+                            canvas.drawRoundRect(tmpRect, 42f, 42f, cardFillPaint)
                         }
 
                         val tTitle = firstTrack?.optString("title").orEmpty().ifBlank { "Henüz Veri Yok" }
                         val tArtist = firstTrack?.optString("artist").orEmpty()
                         val tPlays = firstTrack?.optInt("playCount", 0) ?: 0
 
-                        val textP = easeOutCubic((lt - 0.35f) / 0.75f)
-                        titlePaint.textAlign = Paint.Align.CENTER
-                        titlePaint.textSize = 42f
-                        titlePaint.alpha = (255 * textP).toInt()
+                        val tp = easeOutCubic((lt - 0.35f) / 0.75f)
+                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 42f; titlePaint.alpha = (255 * tp).toInt()
                         canvas.drawText(ellipsize(titlePaint, tTitle, 600f), WIDTH / 2f, 825f, titlePaint)
-
-                        subPaint.textAlign = Paint.Align.CENTER
-                        subPaint.textSize = 28f
-                        subPaint.alpha = (205 * textP).toInt()
+                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 28f; subPaint.alpha = (205 * tp).toInt()
                         canvas.drawText(ellipsize(subPaint, tArtist, 580f), WIDTH / 2f, 875f, subPaint)
 
-                        val pillRect = RectF(200f, 926f, WIDTH - 200f, 994f)
-                        canvas.drawRoundRect(pillRect, 34f, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            color = Color.argb((textP * 195f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        })
+                        tmpRect.set(200f, 926f, WIDTH - 200f, 994f)
+                        cardFillPaint.color = Color.argb((tp * 195f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
+                        canvas.drawRoundRect(tmpRect, 34f, 34f, cardFillPaint)
                         titlePaint.textSize = 26f
                         canvas.drawText("$tPlays kez dinlendi", WIDTH / 2f, 970f, titlePaint)
                     }
@@ -611,53 +604,35 @@ object StoryVideoGenerator {
                     tSec < 12.4f -> {
                         val lt = tSec - 9.0f
                         val p = easeOutCubic(lt / 0.7f)
-                        accentPaint.textAlign = Paint.Align.LEFT
-                        accentPaint.textSize = 24f
-                        accentPaint.alpha = (255 * p).toInt()
+                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 24f; accentPaint.alpha = (255 * p).toInt()
                         canvas.drawText("TOP 5 PARÇA", 56f, 160f, accentPaint)
-
-                        titlePaint.textAlign = Paint.Align.LEFT
-                        titlePaint.textSize = 42f
-                        titlePaint.alpha = (255 * p).toInt()
+                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 42f; titlePaint.alpha = (255 * p).toInt()
                         canvas.drawText("Senin Liste Başların", 56f, 218f, titlePaint)
 
                         topTracks.forEachIndexed { idx, item ->
                             val rp = easeOutCubic((lt - idx * 0.16f) / 0.55f)
                             val y = 268f + idx * 124f
                             val slide = (1f - rp) * 90f
-                            val r = RectF(56f + slide, y, WIDTH - 56f + slide, y + 104f)
-                            canvas.drawRoundRect(r, 24f, 24f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                                color = Color.argb((rp * 34f).toInt(), 255, 255, 255)
-                            })
-                            accentPaint.textAlign = Paint.Align.LEFT
-                            accentPaint.textSize = 36f
-                            accentPaint.alpha = (255 * rp).toInt()
-                            canvas.drawText("#${idx + 1}", r.left + 26f, y + 65f, accentPaint)
+                            tmpRect.set(56f + slide, y, WIDTH - 56f + slide, y + 104f)
+                            cardFillPaint.color = Color.argb((rp * 34f).toInt(), 255, 255, 255)
+                            canvas.drawRoundRect(tmpRect, 24f, 24f, cardFillPaint)
 
-                            titlePaint.textAlign = Paint.Align.LEFT
-                            titlePaint.textSize = 27f
-                            titlePaint.alpha = (255 * rp).toInt()
-                            canvas.drawText(ellipsize(titlePaint, item.optString("title"), 390f), r.left + 96f, y + 48f, titlePaint)
-
-                            subPaint.textAlign = Paint.Align.LEFT
-                            subPaint.textSize = 21f
-                            subPaint.alpha = (185 * rp).toInt()
-                            canvas.drawText(ellipsize(subPaint, item.optString("artist"), 390f), r.left + 96f, y + 82f, subPaint)
-
+                            accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 36f; accentPaint.alpha = (255 * rp).toInt()
+                            canvas.drawText("#${idx + 1}", tmpRect.left + 26f, y + 65f, accentPaint)
+                            titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 27f; titlePaint.alpha = (255 * rp).toInt()
+                            canvas.drawText(ellipsize(titlePaint, item.optString("title"), 390f), tmpRect.left + 96f, y + 48f, titlePaint)
+                            subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 21f; subPaint.alpha = (185 * rp).toInt()
+                            canvas.drawText(ellipsize(subPaint, item.optString("artist"), 390f), tmpRect.left + 96f, y + 82f, subPaint)
                             subPaint.textAlign = Paint.Align.RIGHT
-                            canvas.drawText("${item.optInt("playCount", 0)}x", r.right - 26f, y + 62f, subPaint)
+                            canvas.drawText("${item.optInt("playCount", 0)}x", tmpRect.right - 26f, y + 62f, subPaint)
                         }
 
                         if (topArtists.isNotEmpty()) {
                             val ap = easeOutCubic((lt - 0.9f) / 0.7f)
-                            accentPaint.textAlign = Paint.Align.LEFT
-                            accentPaint.textSize = 22f
-                            accentPaint.alpha = (255 * ap).toInt()
+                            accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 22f; accentPaint.alpha = (255 * ap).toInt()
                             canvas.drawText("FAVORİ SANATÇILAR", 56f, 945f, accentPaint)
                             val names = topArtists.take(3).joinToString("  •  ") { it.first }
-                            titlePaint.textAlign = Paint.Align.LEFT
-                            titlePaint.textSize = 26f
-                            titlePaint.alpha = (255 * ap).toInt()
+                            titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 26f; titlePaint.alpha = (255 * ap).toInt()
                             canvas.drawText(ellipsize(titlePaint, names, WIDTH - 112f), 56f, 992f, titlePaint)
                         }
                     }
@@ -665,45 +640,42 @@ object StoryVideoGenerator {
                     else -> {
                         val lt = tSec - 12.4f
                         val p = easeOutCubic(lt / 0.8f)
-                        drawSunifyLogo(canvas, WIDTH / 2f, 340f, 74f * p, coverRgb, (255 * p).toInt())
+                        val r = 76f * p
+                        bmpPaint.alpha = (255 * p).toInt()
+                        tmpRect.set(WIDTH / 2f - r, 340f - r, WIDTH / 2f + r, 340f + r)
+                        canvas.drawBitmap(logoBmp, null, tmpRect, bmpPaint)
+                        bmpPaint.alpha = 255
 
-                        accentPaint.textAlign = Paint.Align.CENTER
-                        accentPaint.textSize = 26f
-                        accentPaint.alpha = (255 * p).toInt()
+                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 26f; accentPaint.alpha = (255 * p).toInt()
                         canvas.drawText("MÜZİK KİŞİLİĞİN", WIDTH / 2f, 490f, accentPaint)
-
-                        titlePaint.textAlign = Paint.Align.CENTER
-                        titlePaint.textSize = 54f
-                        titlePaint.alpha = (255 * p).toInt()
+                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 54f; titlePaint.alpha = (255 * p).toInt()
                         canvas.drawText(personality, WIDTH / 2f, 566f, titlePaint)
 
-                        val summaryRect = RectF(74f, 640f, WIDTH - 74f, 870f)
-                        canvas.drawRoundRect(summaryRect, 34f, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            color = Color.argb((p * 36f).toInt(), 255, 255, 255)
-                        })
-                        subPaint.textAlign = Paint.Align.CENTER
-                        subPaint.textSize = 28f
-                        subPaint.alpha = (230 * p).toInt()
+                        tmpRect.set(74f, 640f, WIDTH - 74f, 870f)
+                        cardFillPaint.color = Color.argb((p * 36f).toInt(), 255, 255, 255)
+                        canvas.drawRoundRect(tmpRect, 34f, 34f, cardFillPaint)
+                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 28f; subPaint.alpha = (230 * p).toInt()
                         canvas.drawText("$totalMinutes dakika  •  $totalPlays çalma  •  $streakDays gün seri", WIDTH / 2f, 735f, subPaint)
                         titlePaint.textSize = 28f
                         canvas.drawText(ellipsize(titlePaint, firstTrack?.optString("title").orEmpty().ifBlank { "Sunify" }, 520f), WIDTH / 2f, 804f, titlePaint)
-
-                        subPaint.textSize = 24f
-                        subPaint.alpha = (180 * p).toInt()
+                        subPaint.textSize = 24f; subPaint.alpha = (180 * p).toInt()
                         canvas.drawText("Sunify ile oluşturuldu", WIDTH / 2f, 1140f, subPaint)
                     }
                 }
 
-                // Alt köşe küçük Sunify marka imzası
-                drawSunifyLogo(canvas, 76f, HEIGHT - 72f, 22f, coverRgb, 230)
-                subPaint.textAlign = Paint.Align.LEFT
-                subPaint.textSize = 22f
-                subPaint.alpha = 215
+                canvas.drawBitmap(logoBmp, null, footerLogoRect, bmpPaint)
+                subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 22f; subPaint.alpha = 215
                 canvas.drawText("Sunify", 110f, HEIGHT - 64f, subPaint)
             }
         } finally {
-            topCoverBmp?.recycle()
-            runCatching { tempAudio?.delete() }
+            topCoverRaw?.recycle()
+            topCoverRounded?.recycle()
+            prebakedBg.recycle()
+            orb1Bmp.recycle()
+            orb2Bmp.recycle()
+            logoBmp.recycle()
+            runCatching { audioEx?.release() }
+            runCatching { tmpAudio?.delete() }
         }
     }
 
@@ -723,35 +695,55 @@ object StoryVideoGenerator {
         val lyricsOffset = payload.optDouble("lyricsOffset", 0.0)
         val rawLines = payload.optJSONArray("lyrics") ?: JSONArray()
 
-        data class LyricLine(val time: Double, val text: String)
+        data class LyricLine(val time: Double, val text: String, val wrappedActive: List<String>, val wrappedDim: List<String>)
+        val activeLyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 42f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val activeGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(95, coverRgb[0], coverRgb[1], coverRgb[2]); textSize = 42f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val dimLyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(120, 255, 255, 255); textSize = 33f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+
         val lines = mutableListOf<LyricLine>()
         for (i in 0 until rawLines.length()) {
             val o = rawLines.optJSONObject(i) ?: continue
             val txt = o.optString("text").trim()
-            if (txt.isNotEmpty()) lines.add(LyricLine(o.optDouble("time", 0.0), txt))
+            if (txt.isNotEmpty()) {
+                lines.add(
+                    LyricLine(
+                        time = o.optDouble("time", 0.0),
+                        text = txt,
+                        wrappedActive = wrapText(activeLyricPaint, txt, WIDTH - 120f).take(2),
+                        wrappedDim = wrapText(dimLyricPaint, txt, WIDTH - 120f).take(2)
+                    )
+                )
+            }
         }
 
-        val coverBmp = fetchBitmap(thumbnail, 512)
-        val tempAudio = downloadTempAacAudio(context, audioService, trackId, title, artist)
+        val coverRaw = fetchBitmap(thumbnail, 420)
+        val coverRounded = coverRaw?.let { bakeRoundedCover(it, 124, 22f) }
+        val prebakedBg = bakeBackgroundBitmap(coverRgb, coverRaw, 92)
+        val orb1Bmp = bakeOrbBitmap(Color.argb(125, coverRgb[0], coverRgb[1], coverRgb[2]), 256)
+        val orb2Bmp = bakeOrbBitmap(Color.argb(100, (coverRgb[0] * 0.85f).toInt(), (coverRgb[1] * 0.6f).toInt(), 255), 256)
+        val logoBmp = bakeSunifyLogoBitmap(coverRgb, 120)
+        val (audioEx, tmpAudio) = openAacExtractor(context, audioService, trackId, title, artist)
 
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(200, 255, 255, 255)
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-        }
-        val activeLyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = 42f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val dimLyricPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(120, 255, 255, 255)
-            textSize = 33f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 32f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(205, 255, 255, 255); textSize = 24f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+        val headerFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 14, 12, 24) }
+        val headerStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.2f; color = Color.argb(135, coverRgb[0], coverRgb[1], coverRgb[2]) }
+        val fallbackArtPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, coverRgb[0], coverRgb[1], coverRgb[2]) }
+        val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val progBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+        val progFgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]) }
+        val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+        val headerRect = RectF(44f, 84f, WIDTH - 44f, 252f)
+        val artRect = RectF(66f, 106f, 190f, 230f)
+        val headerLogoRect = RectF(WIDTH - 122f, 140f, WIDTH - 66f, 196f)
+        val footerLogoRect = RectF(58f, 1218f, 94f, 1254f)
+        val clipRect = RectF(36f, 300f, WIDTH - 36f, 1040f)
+        val progBgRect = RectF(56f, 1185f, WIDTH - 56f, 1193f)
+        val tmpRect = RectF()
+        val ellipsizedTitle = ellipsize(titlePaint, title, 360f)
+        val ellipsizedArtist = ellipsize(subPaint, artist, 360f)
+        val fallbackCenterTitle = ellipsize(activeLyricPaint, title, 600f)
 
         var smoothedScrollIdx = 0f
         try {
@@ -765,157 +757,107 @@ object StoryVideoGenerator {
             return renderAndMuxVideo(
                 context = context,
                 durationSec = durationSec,
-                audioSourceFile = tempAudio,
+                audioExtractor = audioEx,
                 audioStartSec = startSec,
                 fileName = "$cleanName-Story.mp4"
             ) { canvas, tSec, progress ->
-                drawAnimatedBg(canvas, tSec, coverRgb, coverBmp, 85)
+                canvas.drawBitmap(prebakedBg, 0f, 0f, null)
 
-                // Üst Liquid Glass Şarkı Kartı
-                val headerRect = RectF(44f, 84f, WIDTH - 44f, 252f)
-                canvas.drawRoundRect(headerRect, 34f, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.argb(150, 14, 12, 24)
-                })
-                canvas.drawRoundRect(headerRect, 34f, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE
-                    strokeWidth = 2.2f
-                    color = Color.argb(135, coverRgb[0], coverRgb[1], coverRgb[2])
-                })
+                val ox1 = WIDTH * 0.22f + cos(tSec * 0.8f) * 75f
+                val oy1 = HEIGHT * 0.20f + sin(tSec * 0.6f) * 60f
+                tmpRect.set(ox1 - 360f, oy1 - 360f, ox1 + 360f, oy1 + 360f)
+                canvas.drawBitmap(orb1Bmp, null, tmpRect, null)
 
-                val artRect = RectF(66f, 106f, 190f, 230f)
-                if (coverBmp != null) {
-                    drawRoundedBitmap(canvas, coverBmp, artRect, 22f)
-                } else {
-                    canvas.drawRoundRect(artRect, 22f, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = Color.argb(160, coverRgb[0], coverRgb[1], coverRgb[2])
-                    })
-                }
+                val ox2 = WIDTH * 0.80f + sin(tSec * 0.7f) * 70f
+                val oy2 = HEIGHT * 0.78f + cos(tSec * 0.9f) * 65f
+                tmpRect.set(ox2 - 340f, oy2 - 340f, ox2 + 340f, oy2 + 340f)
+                canvas.drawBitmap(orb2Bmp, null, tmpRect, null)
 
-                titlePaint.textAlign = Paint.Align.LEFT
-                titlePaint.textSize = 32f
-                titlePaint.alpha = 255
-                canvas.drawText(ellipsize(titlePaint, title, 360f), 212f, 158f, titlePaint)
+                canvas.drawRoundRect(headerRect, 34f, 34f, headerFill)
+                canvas.drawRoundRect(headerRect, 34f, 34f, headerStroke)
 
-                subPaint.textAlign = Paint.Align.LEFT
-                subPaint.textSize = 24f
-                subPaint.alpha = 205
-                canvas.drawText(ellipsize(subPaint, artist, 360f), 212f, 198f, subPaint)
+                if (coverRounded != null) canvas.drawBitmap(coverRounded, null, artRect, bmpPaint)
+                else canvas.drawRoundRect(artRect, 22f, 22f, fallbackArtPaint)
 
-                // Sağ üst Sunify logosu
-                drawSunifyLogo(canvas, WIDTH - 94f, 168f, 28f, coverRgb, 255)
+                canvas.drawText(ellipsizedTitle, 212f, 158f, titlePaint)
+                subPaint.textSize = 24f; subPaint.alpha = 205
+                canvas.drawText(ellipsizedArtist, 212f, 198f, subPaint)
+                canvas.drawBitmap(logoBmp, null, headerLogoRect, bmpPaint)
 
-                // Orta Kayan Söz Alanı (Clipped)
-                val lyricsTop = 300f
-                val lyricsBottom = 1040f
-                val centerY = (lyricsTop + lyricsBottom) / 2f
+                val centerY = 670f
                 val curSongTime = startSec + tSec + lyricsOffset
-
                 var activeIdx = 0
                 for (i in lines.indices) {
                     if (curSongTime >= lines[i].time) activeIdx = i
                 }
-                smoothedScrollIdx += (activeIdx.toFloat() - smoothedScrollIdx) * 0.16f
+                smoothedScrollIdx += (activeIdx.toFloat() - smoothedScrollIdx) * 0.20f
 
                 val saveLyrics = canvas.save()
-                canvas.clipRect(RectF(36f, lyricsTop, WIDTH - 36f, lyricsBottom))
-
+                canvas.clipRect(clipRect)
                 if (lines.isEmpty()) {
                     activeLyricPaint.textAlign = Paint.Align.CENTER
-                    canvas.drawText(ellipsize(activeLyricPaint, title, 600f), WIDTH / 2f, centerY, activeLyricPaint)
+                    canvas.drawText(fallbackCenterTitle, WIDTH / 2f, centerY, activeLyricPaint)
+                    activeLyricPaint.textAlign = Paint.Align.LEFT
                 } else {
                     val lineSpacing = 148f
                     for (i in lines.indices) {
                         val delta = i - smoothedScrollIdx
-                        if (abs(delta) > 3.6f) continue
+                        if (abs(delta) > 3.5f) continue
                         val yBase = centerY + delta * lineSpacing
                         val distNorm = abs(delta).coerceIn(0f, 2.5f)
-                        val isNearActive = abs(i - activeIdx) == 0
+                        val isActive = i == activeIdx
 
-                        val paint = if (isNearActive) activeLyricPaint else dimLyricPaint
-                        paint.textAlign = Paint.Align.LEFT
-                        val alpha = when {
-                            isNearActive -> 255
-                            distNorm < 1.3f -> 135
-                            else -> 68
-                        }
-                        paint.alpha = alpha
-
-                        val wrapped = wrapText(paint, lines[i].text, WIDTH - 120f).take(2)
-                        val blockOffset = if (wrapped.size > 1) -22f else 0f
-                        wrapped.forEachIndexed { wi, wl ->
-                            val ly = yBase + blockOffset + wi * (if (isNearActive) 50f else 42f)
-                            if (isNearActive) {
-                                paint.setShadowLayer(18f, 0f, 0f, Color.argb(170, coverRgb[0], coverRgb[1], coverRgb[2]))
-                            } else {
-                                paint.clearShadowLayer()
+                        if (isActive) {
+                            val wrapped = lines[i].wrappedActive
+                            val blockOff = if (wrapped.size > 1) -22f else 0f
+                            for (wi in wrapped.indices) {
+                                val ly = yBase + blockOff + wi * 50f
+                                canvas.drawText(wrapped[wi], 62f, ly + 2f, activeGlowPaint)
+                                canvas.drawText(wrapped[wi], 60f, ly, activeLyricPaint)
                             }
-                            canvas.drawText(wl, 60f, ly, paint)
+                        } else {
+                            dimLyricPaint.alpha = if (distNorm < 1.3f) 135 else 68
+                            val wrapped = lines[i].wrappedDim
+                            val blockOff = if (wrapped.size > 1) -20f else 0f
+                            for (wi in wrapped.indices) {
+                                canvas.drawText(wrapped[wi], 60f, yBase + blockOff + wi * 42f, dimLyricPaint)
+                            }
                         }
                     }
-                    activeLyricPaint.clearShadowLayer()
                 }
                 canvas.restoreToCount(saveLyrics)
 
-                // Alt Ritmik Dalga + İlerleme Çubuğu + Sunify İmzası
-                val barCount = 28
+                val barCount = 26
                 val vizLeft = 56f
-                val vizW = WIDTH - 112f
                 val gap = 6f
-                val bw = (vizW - gap * (barCount - 1)) / barCount
+                val bw = (WIDTH - 112f - gap * (barCount - 1)) / barCount
                 val vizBaseY = 1135f
-                val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
                 for (b in 0 until barCount) {
                     val wave = 0.25f + 0.75f * abs(sin((tSec * 4.2f + b * 0.45f).toDouble())).toFloat()
                     val bh = 10f + wave * 42f
                     val bx = vizLeft + b * (bw + gap)
                     barPaint.color = Color.argb((120 + wave * 120).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                    canvas.drawRoundRect(RectF(bx, vizBaseY - bh / 2f, bx + bw, vizBaseY + bh / 2f), bw / 2f, bw / 2f, barPaint)
+                    tmpRect.set(bx, vizBaseY - bh / 2f, bx + bw, vizBaseY + bh / 2f)
+                    canvas.drawRoundRect(tmpRect, bw / 2f, bw / 2f, barPaint)
                 }
 
-                // İlerleme çubuğu
-                val progRect = RectF(56f, 1185f, WIDTH - 56f, 1193f)
-                canvas.drawRoundRect(progRect, 4f, 4f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.argb(70, 255, 255, 255)
-                })
-                canvas.drawRoundRect(
-                    RectF(56f, 1185f, 56f + (WIDTH - 112f) * progress, 1193f),
-                    4f, 4f,
-                    Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]) }
-                )
+                canvas.drawRoundRect(progBgRect, 4f, 4f, progBgPaint)
+                tmpRect.set(56f, 1185f, 56f + (WIDTH - 112f) * progress, 1193f)
+                canvas.drawRoundRect(tmpRect, 4f, 4f, progFgPaint)
 
-                drawSunifyLogo(canvas, 76f, 1236f, 18f, coverRgb, 230)
-                subPaint.textAlign = Paint.Align.LEFT
-                subPaint.textSize = 21f
-                subPaint.alpha = 215
+                canvas.drawBitmap(logoBmp, null, footerLogoRect, bmpPaint)
+                subPaint.textSize = 21f; subPaint.alpha = 215
                 canvas.drawText("Sunify  •  Şarkı Klibi", 106f, 1244f, subPaint)
             }
         } finally {
-            coverBmp?.recycle()
-            runCatching { tempAudio?.delete() }
+            coverRaw?.recycle()
+            coverRounded?.recycle()
+            prebakedBg.recycle()
+            orb1Bmp.recycle()
+            orb2Bmp.recycle()
+            logoBmp.recycle()
+            runCatching { audioEx?.release() }
+            runCatching { tmpAudio?.delete() }
         }
-    }
-
-    private fun downloadTempAacAudio(
-        context: Context,
-        audioService: YouTubeAudioService,
-        id: String,
-        title: String,
-        artist: String
-    ): File? {
-        return runCatching {
-            val stream = audioService.resolveAudioStream(id.ifBlank { "$artist $title" }, title, artist)
-            val tmp = File(context.cacheDir, "story_audio_${System.currentTimeMillis()}.m4a")
-            val req = Request.Builder()
-                .url(stream.url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
-                .build()
-            OkHttpDownloader.streamClient.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return@use null
-                res.body?.byteStream()?.use { ins ->
-                    tmp.outputStream().buffered(65536).use { ins.copyTo(it, 65536) }
-                }
-            }
-            if (tmp.exists() && tmp.length() > 4096L) tmp else null
-        }.getOrNull()
     }
 }
