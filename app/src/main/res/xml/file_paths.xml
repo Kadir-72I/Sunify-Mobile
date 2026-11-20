@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="shared_cards" path="shared/" />
+    <cache-path name="update_apks" path="updates/" />
+    <cache-path name="story_videos" path="stories/" />
+    <cache-path name="trimmed_clips" path="clips/" />
+    <files-path name="app_files" path="." />
+    <external-path name="external_downloads" path="Download/" />
 </paths>

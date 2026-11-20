@@ -2,6 +2,7 @@
 (function initSunifyAudioFXModule(global) {
   const isMobileEnv = Boolean(global.SunifyAndroidBridge)
     || /Android|Mobile/i.test((global.navigator && global.navigator.userAgent) || '');
+  const hasNativeAndroidAudio = () => Boolean(global.SunifyAndroidBridge?.hasNativeAudio?.());
   const EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
   const EQ_LABELS = ['32Hz', '64Hz', '125Hz', '250Hz', '500Hz', '1kHz', '2kHz', '4kHz', '8kHz', '16kHz'];
   const EQ_PRESETS = {
@@ -149,8 +150,23 @@
     wetGain.gain.setTargetAtTime(r * 0.72, now, 0.04);
   }
 
+  function pushNativeFxState() {
+    if (!hasNativeAndroidAudio()) return;
+    try {
+      global.SunifyAndroidBridge.nativeAudioSetEqBands?.(JSON.stringify(state.eqBands));
+      global.SunifyAndroidBridge.nativeAudioSetNormalization?.(Boolean(state.normalization));
+      global.SunifyAndroidBridge.nativeAudioSetReverb?.(Number(state.reverb) || 0);
+      global.SunifyAndroidBridge.nativeAudioSetSpeedPitch?.(clamp(state.rate, 0.75, 1.35), Boolean(state.preservesPitch));
+    } catch {}
+  }
+
   function init(element) {
     if (element) audioEl = element;
+    if (hasNativeAndroidAudio()) {
+      pushNativeFxState();
+      startVisualizerLoop();
+      return true;
+    }
     if (mediaSource || initFailed || !audioEl) return Boolean(mediaSource);
     const Ctx = global.AudioContext || global.webkitAudioContext;
     if (!Ctx) {
@@ -212,6 +228,10 @@
 
   function initIfNeeded(element) {
     if (element) audioEl = element;
+    if (hasNativeAndroidAudio()) {
+      pushNativeFxState();
+      return true;
+    }
     reapplyToAudio();
     if (!audioEl) return false;
     if (mediaSource) return true;
@@ -222,6 +242,10 @@
   }
 
   async function resume() {
+    if (hasNativeAndroidAudio()) {
+      startVisualizerLoop();
+      return;
+    }
     if (audioEl && !mediaSource && (!isMobileEnv || hasActiveDsp())) {
       init(audioEl);
     }
@@ -234,9 +258,13 @@
   }
 
   function reapplyToAudio() {
-    if (!audioEl) return;
     const rate = clamp(state.rate, 0.75, 1.35);
     const keepPitch = Boolean(state.preservesPitch);
+    if (hasNativeAndroidAudio()) {
+      try { global.SunifyAndroidBridge.nativeAudioSetSpeedPitch?.(rate, keepPitch); } catch {}
+      return;
+    }
+    if (!audioEl) return;
     try {
       audioEl.defaultPlaybackRate = rate;
       audioEl.playbackRate = rate;
@@ -257,6 +285,10 @@
     try {
       localStorage.setItem('sunify_fx_eq_10', JSON.stringify(state.eqBands));
     } catch {}
+    if (hasNativeAndroidAudio()) {
+      try { global.SunifyAndroidBridge.nativeAudioSetEqBands?.(JSON.stringify(state.eqBands)); } catch {}
+      return;
+    }
     if (audioEl && !mediaSource && hasActiveDsp()) {
       init(audioEl);
       resume();
@@ -285,6 +317,10 @@
     try {
       localStorage.setItem('sunify_fx_reverb', String(state.reverb));
     } catch {}
+    if (hasNativeAndroidAudio()) {
+      try { global.SunifyAndroidBridge.nativeAudioSetReverb?.(state.reverb); } catch {}
+      return;
+    }
     if (audioEl && !mediaSource && hasActiveDsp()) {
       init(audioEl);
       resume();
@@ -297,6 +333,10 @@
     try {
       localStorage.setItem('sunify_fx_norm', String(state.normalization));
     } catch {}
+    if (hasNativeAndroidAudio()) {
+      try { global.SunifyAndroidBridge.nativeAudioSetNormalization?.(state.normalization); } catch {}
+      return;
+    }
     if (audioEl && !mediaSource && hasActiveDsp()) {
       init(audioEl);
       resume();

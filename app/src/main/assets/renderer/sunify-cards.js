@@ -398,94 +398,195 @@
     return canvas.toDataURL('image/png');
   }
 
+  function drawSunifyLogo(ctx, cx, cy, radius, rgb) {
+    const grad = ctx.createLinearGradient(cx - radius, cy - radius, cx + radius, cy + radius);
+    grad.addColorStop(0, `rgb(${rgb})`);
+    grad.addColorStop(1, '#3b1d6e');
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = Math.max(2, radius * 0.08);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2.5, radius * 0.14);
+    const heights = [0.28, 0.58, 0.82, 0.54, 0.28];
+    const spacing = radius * 0.28;
+    heights.forEach((h, i) => {
+      const x = cx + (i - 2) * spacing;
+      const half = radius * h * 0.46;
+      ctx.beginPath();
+      ctx.moveTo(x, cy - half);
+      ctx.lineTo(x, cy + half);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   async function generateLyricCardDataUrl({ track, lines, translations = [], coverRgb, apiBase }) {
+    const picked = (lines || []).slice(0, 8);
+    const count = picked.length;
     const canvas = document.createElement('canvas');
     canvas.width = 1080;
-    canvas.height = 1350;
+    canvas.height = count > 4 ? 1620 : 1350;
+    const H = canvas.height;
     const ctx = canvas.getContext('2d');
     const rgb = extractRgbString(coverRgb);
 
-    const bg = ctx.createLinearGradient(0, 0, 1080, 1350);
-    bg.addColorStop(0, '#140e24');
-    bg.addColorStop(1, '#08070f');
+    const bg = ctx.createLinearGradient(0, 0, 1080, H);
+    bg.addColorStop(0, '#160f28');
+    bg.addColorStop(0.52, '#0a0812');
+    bg.addColorStop(1, '#120b22');
     ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, 1080, 1350);
+    ctx.fillRect(0, 0, 1080, H);
 
     const img = await loadSafeImage(track?.thumbnail, apiBase);
     if (img) {
       ctx.save();
-      ctx.globalAlpha = 0.3;
-      ctx.filter = 'blur(42px) saturate(1.6)';
-      ctx.drawImage(img, -80, -80, 1240, 1510);
+      ctx.globalAlpha = 0.36;
+      ctx.filter = 'blur(46px) saturate(1.7)';
+      ctx.drawImage(img, -90, -90, 1260, H + 180);
       ctx.restore();
     }
 
-    const orb = ctx.createRadialGradient(540, 620, 60, 540, 620, 620);
-    orb.addColorStop(0, `rgba(${rgb}, 0.42)`);
-    orb.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = orb;
-    ctx.fillRect(0, 0, 1080, 1350);
+    const orb1 = ctx.createRadialGradient(220, 240, 40, 220, 240, 620);
+    orb1.addColorStop(0, `rgba(${rgb}, 0.44)`);
+    orb1.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = orb1;
+    ctx.fillRect(0, 0, 1080, H);
 
-    ctx.fillStyle = 'rgba(14, 12, 22, 0.72)';
-    drawRoundedRect(ctx, 74, 86, 932, 1178, 44);
+    const orb2 = ctx.createRadialGradient(880, H - 220, 40, 880, H - 220, 560);
+    orb2.addColorStop(0, `rgba(${rgb}, 0.32)`);
+    orb2.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = orb2;
+    ctx.fillRect(0, 0, 1080, H);
+
+    // Ana Liquid Glass Kart
+    const cardPad = 68;
+    const cardW = 1080 - cardPad * 2;
+    const cardH = H - 152;
+    const cardGrad = ctx.createLinearGradient(cardPad, 76, cardPad + cardW, 76 + cardH);
+    cardGrad.addColorStop(0, 'rgba(22, 18, 36, 0.80)');
+    cardGrad.addColorStop(1, 'rgba(11, 9, 20, 0.88)');
+    ctx.fillStyle = cardGrad;
+    drawRoundedRect(ctx, cardPad, 76, cardW, cardH, 48);
     ctx.fill();
-    ctx.strokeStyle = `rgba(${rgb}, 0.55)`;
+    ctx.strokeStyle = `rgba(${rgb}, 0.58)`;
     ctx.lineWidth = 3;
     ctx.stroke();
 
+    // Üst Parlama Çizgisi
     ctx.save();
-    drawRoundedRect(ctx, 132, 148, 132, 132, 26);
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cardPad + 54, 79);
+    ctx.lineTo(cardPad + cardW - 54, 79);
+    ctx.stroke();
+    ctx.restore();
+
+    // Albüm Kapağı (gölgeli)
+    ctx.save();
+    ctx.shadowColor = `rgba(${rgb}, 0.55)`;
+    ctx.shadowBlur = 32;
+    ctx.shadowOffsetY = 12;
+    drawRoundedRect(ctx, 124, 136, 156, 156, 30);
+    ctx.fillStyle = `rgba(${rgb}, 0.35)`;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    drawRoundedRect(ctx, 124, 136, 156, 156, 30);
     ctx.clip();
     if (img) {
-      ctx.drawImage(img, 132, 148, 132, 132);
+      ctx.drawImage(img, 124, 136, 156, 156);
     } else {
-      ctx.fillStyle = `rgba(${rgb}, 0.45)`;
-      ctx.fillRect(132, 148, 132, 132);
+      ctx.fillStyle = `rgba(${rgb}, 0.48)`;
+      ctx.fillRect(124, 136, 156, 156);
     }
     ctx.restore();
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '800 38px Inter, sans-serif';
-    ctx.fillText(fitText(ctx, track?.title || 'Sunify', 660), 292, 206);
-    ctx.fillStyle = 'rgba(255,255,255,0.74)';
-    ctx.font = '600 28px Inter, sans-serif';
-    ctx.fillText(fitText(ctx, track?.artist || '', 660), 292, 252);
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, 124, 136, 156, 156, 30);
+    ctx.stroke();
 
-    let cursorY = 390;
-    const maxY = 1110;
-    (lines || []).slice(0, 4).forEach((line, idx) => {
+    // Şarkı Bilgileri
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 40px Inter, sans-serif';
+    ctx.fillText(fitText(ctx, track?.title || 'Sunify', 630), 310, 202);
+    ctx.fillStyle = 'rgba(255,255,255,0.74)';
+    ctx.font = '600 29px Inter, sans-serif';
+    ctx.fillText(fitText(ctx, track?.artist || '', 630), 310, 250);
+
+    // Dekoratif Tırnak
+    ctx.fillStyle = `rgba(${rgb}, 0.55)`;
+    ctx.font = '900 104px Georgia, serif';
+    ctx.fillText('“', 118, 392);
+
+    // Dinamik Ölçeklenen Söz Satırları (1–8 satır)
+    const hasTr = translations.some((t) => String(t || '').trim().length > 0);
+    const fontSize = count >= 7 ? 33 : count >= 5 ? 38 : hasTr ? 40 : 46;
+    const lineStep = Math.round(fontSize * 1.32);
+    const trFontSize = Math.max(23, Math.round(fontSize * 0.66));
+    const trStep = Math.round(trFontSize * 1.38);
+    const gapBetween = count >= 7 ? 16 : count >= 5 ? 20 : 26;
+
+    let cursorY = 426;
+    const maxY = H - 220;
+    picked.forEach((line, idx) => {
       if (cursorY > maxY) return;
       ctx.fillStyle = '#ffffff';
-      ctx.font = '800 46px Inter, sans-serif';
-      const wrapped = wrapLines(ctx, line, 800);
+      ctx.font = `800 ${fontSize}px Inter, sans-serif`;
+      const wrapped = wrapLines(ctx, line, 824);
       wrapped.forEach((wl) => {
         if (cursorY <= maxY) {
-          ctx.fillText(wl, 132, cursorY);
-          cursorY += 62;
+          ctx.fillText(wl, 126, cursorY);
+          cursorY += lineStep;
         }
       });
       const tr = String(translations[idx] || '').trim();
       if (tr && cursorY <= maxY) {
-        ctx.fillStyle = `rgba(${rgb}, 0.95)`;
-        ctx.font = '600 30px Inter, sans-serif';
-        const wrappedTr = wrapLines(ctx, tr, 800);
+        ctx.fillStyle = `rgba(${rgb}, 0.96)`;
+        ctx.font = `600 ${trFontSize}px Inter, sans-serif`;
+        const wrappedTr = wrapLines(ctx, tr, 824);
         wrappedTr.forEach((wt) => {
           if (cursorY <= maxY) {
-            ctx.fillText(wt, 132, cursorY - 6);
-            cursorY += 44;
+            ctx.fillText(wt, 126, cursorY - 6);
+            cursorY += trStep;
           }
         });
       }
-      cursorY += 28;
+      cursorY += gapBetween;
     });
 
-    ctx.fillStyle = `rgb(${rgb})`;
+    // Alt Ayırıcı Çizgi & Sunify Marka İmzası + Vektör Logo
+    const footerY = H - 152;
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(154, 1188, 18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.86)';
-    ctx.font = '700 28px Inter, sans-serif';
-    ctx.fillText('Sunify • Şarkı Sözü Kartı', 188, 1198);
+    ctx.moveTo(124, footerY - 38);
+    ctx.lineTo(956, footerY - 38);
+    ctx.stroke();
+
+    drawSunifyLogo(ctx, 158, footerY + 12, 30, rgb);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 32px Inter, sans-serif';
+    ctx.fillText('Sunify', 206, footerY + 12);
+    ctx.fillStyle = 'rgba(255,255,255,0.62)';
+    ctx.font = '600 22px Inter, sans-serif';
+    ctx.fillText('Şarkı Sözü Kartı', 206, footerY + 40);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = `rgba(${rgb}, 0.92)`;
+    ctx.font = '700 24px Inter, sans-serif';
+    ctx.fillText(new Date().toLocaleDateString('tr-TR'), 956, footerY + 20);
+    ctx.textAlign = 'left';
 
     return canvas.toDataURL('image/png');
   }

@@ -10,6 +10,8 @@ class SunifyApplication : Application() {
         private set
     lateinit var apiServer: LocalApiServer
         private set
+    lateinit var nativePlayer: NativeAudioPlayer
+        private set
     var apiPort: Int = 3001
         private set
 
@@ -21,6 +23,7 @@ class SunifyApplication : Application() {
             ContentCountry("TR")
         )
         audioService = YouTubeAudioService(this)
+        nativePlayer = NativeAudioPlayer(this)
         apiPort = startAvailableServer()
     }
 

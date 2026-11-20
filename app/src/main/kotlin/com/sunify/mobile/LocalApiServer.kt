@@ -1,23 +1,28 @@
 package com.sunify.mobile
 
+import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import fi.iki.elonen.NanoHTTPD
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
@@ -31,6 +36,24 @@ class LocalApiServer(
     private val coverColorCache = ConcurrentHashMap<String, JSONObject>()
     private val translationCache = ConcurrentHashMap<String, JSONArray>()
     private val sponsorBlockCache = ConcurrentHashMap<String, JSONArray>()
+    private val thumbCacheDir: File by lazy { File(context.cacheDir, "SunifyThumbCache").apply { mkdirs() } }
+
+    init {
+        val pool = Executors.newFixedThreadPool(10)
+        setAsyncRunner(object : AsyncRunner {
+            private val running = java.util.Collections.synchronizedList(ArrayList<ClientHandler>())
+            override fun closeAll() {
+                ArrayList(running).forEach { runCatching { it.close() } }
+            }
+            override fun closed(clientHandler: ClientHandler) {
+                running.remove(clientHandler)
+            }
+            override fun exec(code: ClientHandler) {
+                running.add(code)
+                pool.execute(code)
+            }
+        })
+    }
 
     private fun jsonResponse(status: Response.Status, body: JSONObject): Response {
         val bytes = body.toString().toByteArray(Charsets.UTF_8)
@@ -332,9 +355,55 @@ class LocalApiServer(
                     handleImageProxy(rawUrl)
                 }
 
+                uri == "/api/thumb" -> {
+                    val rawUrl = params["url"].orEmpty().trim()
+                    val size = (params["w"]?.toIntOrNull() ?: 128).coerceIn(64, 320)
+                    handleThumbnailCache(rawUrl, size)
+                }
+
+                uri == "/api/device-music" -> {
+                    jsonResponse(Response.Status.OK, JSONObject().put("tracks", scanDeviceMusic()))
+                }
+
+                uri == "/api/album-art" -> {
+                    val albumId = params["id"]?.toLongOrNull() ?: -1L
+                    handleAlbumArt(albumId)
+                }
+
+                uri == "/api/trim-mp3" -> {
+                    val body = readJsonBody(session)
+                    jsonResponse(Response.Status.OK, handleTrimMp3(body))
+                }
+
+                uri == "/api/story/wrapped-video" -> {
+                    val body = readJsonBody(session)
+                    val res = StoryVideoGenerator.generateWrappedStoryVideo(context, audioService, body)
+                    jsonResponse(
+                        Response.Status.OK,
+                        JSONObject()
+                            .put("success", true)
+                            .put("cachePath", res.cacheFile.absolutePath)
+                            .put("fileName", res.fileName)
+                            .put("displayPath", res.displayPath)
+                    )
+                }
+
+                uri == "/api/story/lyric-clip-video" -> {
+                    val body = readJsonBody(session)
+                    val res = StoryVideoGenerator.generateLyricClipStoryVideo(context, audioService, body)
+                    jsonResponse(
+                        Response.Status.OK,
+                        JSONObject()
+                            .put("success", true)
+                            .put("cachePath", res.cacheFile.absolutePath)
+                            .put("fileName", res.fileName)
+                            .put("displayPath", res.displayPath)
+                    )
+                }
+
                 uri == "/api/updates/latest" -> jsonResponse(
                     Response.Status.OK,
-                    JSONObject().put("updateAvailable", false).put("currentVersion", "1.2.1")
+                    checkGithubLatestRelease("1.2.1")
                 )
 
                 else -> jsonResponse(Response.Status.OK, JSONObject().put("ok", true))
@@ -840,5 +909,249 @@ class LocalApiServer(
         if (translationCache.size > 100) translationCache.clear()
         translationCache[cacheKey] = outArr
         return JSONArray(outArr.toString())
+    }
+
+    private fun handleThumbnailCache(rawUrl: String, targetSize: Int): Response {
+        if (!rawUrl.startsWith("http://", true) && !rawUrl.startsWith("https://", true)) {
+            return errorResponse(Response.Status.BAD_REQUEST, "Geçersiz URL.")
+        }
+        val uriObj = runCatching { URI(rawUrl) }.getOrNull() ?: return errorResponse(Response.Status.BAD_REQUEST, "Hatalı URL.")
+        if (isPrivateOrBlockedHost(uriObj.host)) return errorResponse(Response.Status.FORBIDDEN, "Engellenen adres.")
+
+        val keyHash = MessageDigest.getInstance("SHA-256")
+            .digest("${rawUrl}_$targetSize".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val cacheFile = File(thumbCacheDir, "$keyHash.jpg")
+        if (cacheFile.exists() && cacheFile.length() > 256L) {
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "image/jpeg",
+                BufferedInputStream(cacheFile.inputStream(), 16384),
+                cacheFile.length()
+            ).apply {
+                addHeader("Access-Control-Allow-Origin", "*")
+                addHeader("Cache-Control", "public, max-age=604800")
+            }
+        }
+
+        return runCatching {
+            val req = Request.Builder()
+                .url(rawUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
+                .build()
+            OkHttpDownloader.sharedClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return errorResponse(Response.Status.NOT_FOUND, "Görsel yok.")
+                val rawBytes = resp.body?.bytes() ?: return errorResponse(Response.Status.NOT_FOUND, "Boş görsel.")
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
+                var sample = 1
+                val maxDim = max(bounds.outWidth, bounds.outHeight)
+                while (maxDim / sample > targetSize * 2 && sample < 32) sample *= 2
+                val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                }) ?: return errorResponse(Response.Status.INTERNAL_ERROR, "Görsel çözülemedi.")
+                val scaled = if (decoded.width > targetSize || decoded.height > targetSize) {
+                    val ratio = targetSize.toFloat() / max(decoded.width, decoded.height).toFloat()
+                    val nw = max(1, (decoded.width * ratio).toInt())
+                    val nh = max(1, (decoded.height * ratio).toInt())
+                    Bitmap.createScaledBitmap(decoded, nw, nh, true).also {
+                        if (it !== decoded) decoded.recycle()
+                    }
+                } else decoded
+                val baos = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 78, baos)
+                scaled.recycle()
+                val outBytes = baos.toByteArray()
+                runCatching {
+                    val files = thumbCacheDir.listFiles()
+                    if (files != null && files.size > 450) {
+                        files.sortedBy { it.lastModified() }.take(120).forEach { it.delete() }
+                    }
+                    cacheFile.writeBytes(outBytes)
+                }
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(outBytes), outBytes.size.toLong()).apply {
+                    addHeader("Access-Control-Allow-Origin", "*")
+                    addHeader("Cache-Control", "public, max-age=604800")
+                }
+            }
+        }.getOrElse { errorResponse(Response.Status.INTERNAL_ERROR, "Küçük resim üretilemedi.") }
+    }
+
+    private fun scanDeviceMusic(): JSONArray {
+        val tracks = JSONArray()
+        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM_ID,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.SIZE,
+            MediaStore.Audio.Media.DISPLAY_NAME
+        )
+        val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 15000"
+        val sortOrder = "${MediaStore.Audio.Media.DATE_ADDED} DESC"
+        runCatching {
+            context.contentResolver.query(collection, projection, selection, null, sortOrder)?.use { c ->
+                var count = 0
+                while (c.moveToNext() && count < 600) {
+                    val id = c.getLong(0)
+                    val title = c.getString(1).orEmpty().ifBlank { c.getString(6).orEmpty().substringBeforeLast(".") }
+                    val rawArtist = c.getString(2).orEmpty()
+                    val artist = if (rawArtist.isBlank() || rawArtist == "<unknown>") "Bilinmeyen Sanatçı" else rawArtist
+                    val albumId = c.getLong(3)
+                    val durSec = (c.getLong(4) / 1000L).coerceAtLeast(0L)
+                    val size = c.getLong(5)
+                    val fname = c.getString(6).orEmpty()
+                    val contentUri = ContentUris.withAppendedId(collection, id).toString()
+                    val localUrl = "/api/library/file?uri=${URLEncoder.encode(contentUri, "UTF-8")}&name=${URLEncoder.encode(fname, "UTF-8")}"
+                    tracks.put(JSONObject().apply {
+                        put("id", "device_$id")
+                        put("title", title)
+                        put("artist", artist)
+                        put("duration", durSec)
+                        put("size", size)
+                        put("isLocal", true)
+                        put("isDeviceMusic", true)
+                        put("fileName", fname)
+                        put("localUrl", localUrl)
+                        if (albumId > 0L) put("thumbnail", "http://127.0.0.1:$listeningPort/api/album-art?id=$albumId")
+                    })
+                    count++
+                }
+            }
+        }
+        return tracks
+    }
+
+    private fun handleAlbumArt(albumId: Long): Response {
+        if (albumId <= 0L) return errorResponse(Response.Status.NOT_FOUND, "Kapak yok.")
+        val artUri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+        return runCatching {
+            context.contentResolver.openInputStream(artUri)?.use { ins ->
+                val bytes = ins.readBytes()
+                if (bytes.isEmpty()) return errorResponse(Response.Status.NOT_FOUND, "Boş kapak.")
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(bytes), bytes.size.toLong()).apply {
+                    addHeader("Access-Control-Allow-Origin", "*")
+                    addHeader("Cache-Control", "public, max-age=86400")
+                }
+            } ?: errorResponse(Response.Status.NOT_FOUND, "Kapak bulunamadı.")
+        }.getOrElse { errorResponse(Response.Status.NOT_FOUND, "Kapak okunamadı.") }
+    }
+
+    private fun handleTrimMp3(body: JSONObject): JSONObject {
+        val localUrl = body.optString("localUrl")
+        val id = body.optString("id")
+        val title = body.optString("title", "Sunify").ifBlank { "Sunify" }
+        val artist = body.optString("artist", "")
+        val query = body.optString("query")
+        val startSec = body.optDouble("startSec", 0.0)
+        val endSec = body.optDouble("endSec", startSec + 20.0)
+        val saveToDownloads = body.optBoolean("saveToDownloads", true)
+
+        var sourceFile: File? = null
+        var sourceUri: Uri? = null
+        var tempDownloaded: File? = null
+
+        if (localUrl.contains("/api/library/file")) {
+            val parsedUri = runCatching { Uri.parse("http://localhost$localUrl") }.getOrNull()
+            val uParam = parsedUri?.getQueryParameter("uri").orEmpty()
+            val nParam = parsedUri?.getQueryParameter("name").orEmpty()
+            val (rUri, rFile) = audioService.resolveDownloadFileOrUri(uParam, nParam)
+            sourceUri = rUri
+            sourceFile = rFile
+        }
+
+        try {
+            if (sourceFile == null && sourceUri == null) {
+                val stream = audioService.resolveAudioStream(id.ifEmpty { query }, title, artist)
+                val tmp = File(audioService.cacheDir, "tmp_trim_${System.currentTimeMillis()}.m4a")
+                val req = Request.Builder()
+                    .url(stream.url)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
+                    .build()
+                OkHttpDownloader.streamClient.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) throw IllegalStateException("Ses indirilemedi (${res.code})")
+                    res.body?.byteStream()?.use { ins ->
+                        tmp.outputStream().buffered(65536).use { ins.copyTo(it, 65536) }
+                    }
+                }
+                tempDownloaded = tmp
+                sourceFile = tmp
+            }
+
+            val result = Mp3Trimmer.trimToMp3(
+                context = context,
+                sourceFile = sourceFile,
+                sourceUri = sourceUri,
+                startSec = startSec,
+                endSec = endSec,
+                title = title,
+                artist = artist,
+                saveToDownloads = saveToDownloads
+            )
+            return JSONObject().apply {
+                put("success", true)
+                put("cachePath", result.cacheFile.absolutePath)
+                put("fileName", result.fileName)
+                put("displayPath", result.displayPath)
+                put("publicUri", result.publicUri)
+            }
+        } finally {
+            runCatching { tempDownloaded?.delete() }
+        }
+    }
+
+    private fun checkGithubLatestRelease(currentVersion: String): JSONObject {
+        val fallback = JSONObject()
+            .put("updateAvailable", false)
+            .put("currentVersion", currentVersion)
+            .put("latestVersion", currentVersion)
+        return runCatching {
+            val req = Request.Builder()
+                .url("https://api.github.com/repos/Kadir-72I/Sunify-Mobile/releases/latest")
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Sunify-Mobile/$currentVersion")
+                .build()
+            OkHttpDownloader.sharedClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use fallback
+                val json = JSONObject(resp.body?.string().orEmpty())
+                val tag = json.optString("tag_name").trim()
+                val latestVer = Regex("(\\d+\\.\\d+\\.\\d+)").find(tag)?.groupValues?.get(1)
+                    ?: Regex("(\\d+\\.\\d+\\.\\d+)").find(json.optString("name"))?.groupValues?.get(1)
+                    ?: currentVersion
+                val assets = json.optJSONArray("assets") ?: JSONArray()
+                var apkUrl = ""
+                for (i in 0 until assets.length()) {
+                    val a = assets.optJSONObject(i) ?: continue
+                    val name = a.optString("name")
+                    if (name.endsWith(".apk", ignoreCase = true)) {
+                        apkUrl = a.optString("browser_download_url")
+                        break
+                    }
+                }
+                val isNewer = compareSemver(latestVer, currentVersion) > 0
+                JSONObject().apply {
+                    put("updateAvailable", isNewer)
+                    put("currentVersion", currentVersion)
+                    put("latestVersion", latestVer)
+                    put("releaseName", json.optString("name").ifBlank { tag })
+                    put("notes", json.optString("body").take(800))
+                    put("htmlUrl", json.optString("html_url"))
+                    put("apkUrl", apkUrl)
+                }
+            }
+        }.getOrDefault(fallback)
+    }
+
+    private fun compareSemver(a: String, b: String): Int {
+        val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val pb = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until max(pa.size, pb.size)) {
+            val va = pa.getOrElse(i) { 0 }
+            val vb = pb.getOrElse(i) { 0 }
+            if (va != vb) return va.compareTo(vb)
+        }
+        return 0
     }
 }

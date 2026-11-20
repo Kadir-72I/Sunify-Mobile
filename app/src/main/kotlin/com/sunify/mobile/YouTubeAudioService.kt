@@ -603,7 +603,8 @@ class YouTubeAudioService(private val context: Context) {
         val info = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$vid")
         val bestAudio: AudioStream = info.audioStreams
             .filter { !it.content.isNullOrBlank() }
-            .maxByOrNull { it.averageBitrate }
+            .sortedByDescending { (if (it.format?.mimeType?.contains("mp4", true) == true) 100000 else 0) + it.averageBitrate }
+            .firstOrNull()
             ?: throw IllegalStateException("Bu parça için ses akışı bulunamadı.")
 
         val mime = bestAudio.format?.mimeType ?: "audio/mp4"

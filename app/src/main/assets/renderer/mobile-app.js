@@ -11,6 +11,9 @@
     listeningStats: { totalPlays: 0, tracks: {}, artists: {}, daily: {} },
     recentTracks: [],
     offlineTracks: [],
+    deviceTracks: [],
+    abLoop: { a: null, b: null },
+    smartCacheRunning: false,
     queue: [],
     queueIndex: -1,
     currentTrack: null,
@@ -58,9 +61,117 @@
     accent: localStorage.getItem('sunify_accent_mode') || 'auto',
   };
 
-  const audio = new Audio();
-  audio.crossOrigin = 'anonymous';
-  audio.preload = 'auto';
+  function createAudioEngine() {
+    if (bridge && typeof bridge.hasNativeAudio === 'function' && bridge.hasNativeAudio()) {
+      const listeners = new Map();
+      let _src = '';
+      let _loaded = false;
+      let _paused = true;
+      let _cur = 0;
+      let _dur = 0;
+      let _vol = 1;
+      let _rate = 1;
+      let _keepPitch = true;
+
+      const emit = (type) => {
+        const list = listeners.get(type);
+        if (!list || !list.length) return;
+        const copy = list.slice();
+        copy.forEach((entry) => {
+          try { entry.fn({ type }); } catch {}
+          if (entry.once) {
+            const idx = list.indexOf(entry);
+            if (idx >= 0) list.splice(idx, 1);
+          }
+        });
+      };
+
+      window.__sunifyNativeAudioEvent = (type, posSec, durSec, paused) => {
+        if (Number.isFinite(Number(posSec))) _cur = Math.max(0, Number(posSec));
+        if (Number.isFinite(Number(durSec)) && Number(durSec) > 0) _dur = Number(durSec);
+        _paused = Boolean(paused);
+        emit(String(type || ''));
+      };
+
+      return {
+        isNative: true,
+        get src() { return _src; },
+        set src(val) {
+          _src = String(val || '');
+          _loaded = false;
+          _cur = 0;
+          _dur = 0;
+          _paused = true;
+        },
+        get paused() { return _paused; },
+        get currentTime() { return _cur; },
+        set currentTime(sec) {
+          const t = Math.max(0, Number(sec) || 0);
+          _cur = t;
+          try { bridge.nativeAudioSeek(t); } catch {}
+        },
+        get duration() { return _dur; },
+        get volume() { return _vol; },
+        set volume(v) {
+          _vol = Math.max(0, Math.min(1, Number(v) || 0));
+          try { bridge.nativeAudioSetVolume(_vol); } catch {}
+        },
+        get playbackRate() { return _rate; },
+        set playbackRate(r) {
+          _rate = Math.max(0.75, Math.min(1.35, Number(r) || 1));
+          try { bridge.nativeAudioSetSpeedPitch(_rate, _keepPitch); } catch {}
+        },
+        get defaultPlaybackRate() { return _rate; },
+        set defaultPlaybackRate(r) { _rate = Math.max(0.75, Math.min(1.35, Number(r) || 1)); },
+        get preservesPitch() { return _keepPitch; },
+        set preservesPitch(k) {
+          _keepPitch = Boolean(k);
+          try { bridge.nativeAudioSetSpeedPitch(_rate, _keepPitch); } catch {}
+        },
+        prepareSource(startSec = 0) {
+          if (!_src) return;
+          _loaded = true;
+          _paused = true;
+          try { bridge.nativeAudioSetSource(_src, false, Number(startSec) || 0); } catch {}
+        },
+        play(startSec = 0) {
+          if (!_loaded && _src) {
+            _loaded = true;
+            _paused = false;
+            try { bridge.nativeAudioSetSource(_src, true, Number(startSec) || 0); } catch {}
+          } else {
+            _paused = false;
+            try { bridge.nativeAudioPlay(); } catch {}
+          }
+          return Promise.resolve();
+        },
+        pause() {
+          _paused = true;
+          try { bridge.nativeAudioPause(); } catch {}
+        },
+        addEventListener(type, fn, opts) {
+          if (!listeners.has(type)) listeners.set(type, []);
+          listeners.get(type).push({ fn, once: Boolean(opts && opts.once) });
+        },
+      };
+    }
+
+    const htmlAudio = new Audio();
+    htmlAudio.crossOrigin = 'anonymous';
+    htmlAudio.preload = 'auto';
+    return htmlAudio;
+  }
+
+  const audio = createAudioEngine();
+
+  function thumbUrl(url, size = 128) {
+    const raw = String(url || '').trim();
+    if (!raw || raw.startsWith('data:') || raw.startsWith('http://127.0.0.1:')) return raw || FALLBACK_ART;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      return `${API}/api/thumb?url=${encodeURIComponent(raw)}&w=${size}`;
+    }
+    return raw;
+  }
 
   const $ = (id) => document.getElementById(id);
 
@@ -858,7 +969,7 @@
     if (btn) btn.classList.toggle('active', state.lyricsCardMode);
     if (box) box.classList.toggle('sfx-lyrics-selecting', state.lyricsCardMode);
     if (bar) bar.hidden = !state.lyricsCardMode;
-    if (count) count.textContent = `1–4 satır seç (${state.lyricsSelectedLines.length}/4)`;
+    if (count) count.textContent = `1–8 satır seç (${state.lyricsSelectedLines.length}/8)`;
   }
 
   function readMobileLyricOffsets() {
@@ -1007,8 +1118,8 @@
         state.lyricsSelectedLines.splice(pos, 1);
         el.classList.remove('sfx-lyric-selected');
       } else {
-        if (state.lyricsSelectedLines.length >= 4) {
-          showToast('En fazla 4 satır seçebilirsiniz.');
+        if (state.lyricsSelectedLines.length >= 8) {
+          showToast('En fazla 8 satır seçebilirsiniz.');
           return;
         }
         state.lyricsSelectedLines.push(idx);
@@ -1183,6 +1294,8 @@
       skippedForward: false,
       completed: false,
     };
+    state.abLoop = { a: null, b: null };
+    updateAbLoopBtn();
     updatePlayerUI();
     applyCoverAdaptiveColor(track?.thumbnail || '').catch(() => {});
 
@@ -1201,21 +1314,23 @@
     audio.src = streamUrl;
     window.SunifyAudioFX?.reapplyToAudio();
     window.SunifyAudioFX?.fadeInForNewTrack();
-    if (Number(options.startAtSec) > 0) {
-      const seekSec = Number(options.startAtSec);
+    const startSec = Number(options.startAtSec) > 0 ? Number(options.startAtSec) : 0;
+    if (startSec > 0 && !audio.isNative) {
       const applyStart = () => {
         try {
-          if (Number.isFinite(audio.duration) && audio.duration > seekSec) audio.currentTime = seekSec;
+          if (Number.isFinite(audio.duration) && audio.duration > startSec) audio.currentTime = startSec;
         } catch {}
       };
       audio.addEventListener('loadedmetadata', applyStart, { once: true });
     }
     if (options.autoPlay !== false) {
       try {
-        await audio.play();
+        await audio.play(startSec);
       } catch {
         showToast('Ses başlatılıyor...');
       }
+    } else if (audio.prepareSource) {
+      audio.prepareSource(startSec);
     }
     window.SunifyRealtime?.notifyLocalPlaybackChanged();
     trackSongStartEvent(track);
@@ -1305,40 +1420,20 @@
 
   function renderTrackRows(container, tracks, opts = {}) {
     if (!container) return;
+    if (container._batchObserver) {
+      try { container._batchObserver.disconnect(); } catch {}
+      container._batchObserver = null;
+    }
     if (!tracks || !tracks.length) {
       container.innerHTML = `<div class="m-empty-card">${escapeHtml(opts.emptyText || 'Şarkı bulunamadı.')}</div>`;
       return;
     }
-    container.innerHTML = tracks
-      .map((t, i) => {
-        const playing = state.currentTrack && trackKey(state.currentTrack) === trackKey(t);
-        const liked = isLiked(t);
-        const playCount = opts.showPlayCount ? Number(t.playCount || t.play_count) || 0 : 0;
-        const subText = playCount > 0
-          ? `${t.artist || 'Sanatçı'} · ${playCount} dinleme`
-          : (t.artist || 'Sanatçı');
-        const reorderHtml = opts.reorderMode && opts.playlistId
-          ? `<button class="m-row-btn" data-act="move-up" type="button" aria-label="Yukarı"><i class="fa-solid fa-arrow-up"></i></button><button class="m-row-btn" data-act="move-down" type="button" aria-label="Aşağı"><i class="fa-solid fa-arrow-down"></i></button>`
-          : '';
-        return `
-          <div class="m-track-row ${playing ? 'playing' : ''}" data-idx="${i}">
-            <img class="m-track-thumb" src="${escapeHtml(t.thumbnail || FALLBACK_ART)}" alt="" loading="lazy" />
-            <div class="m-track-meta">
-              <div class="m-track-title">${escapeHtml(t.title)}</div>
-              <div class="m-track-artist">${escapeHtml(subText)}</div>
-            </div>
-            <div class="m-track-actions">
-              ${reorderHtml}
-              <button class="m-row-btn ${liked ? 'liked' : ''}" data-act="like" type="button"><i class="${liked ? 'fa-solid' : 'fa-regular'} fa-heart"></i></button>
-              <button class="m-row-btn" data-act="more" type="button"><i class="fa-solid fa-ellipsis-vertical"></i></button>
-            </div>
-          </div>`;
-      })
-      .join('');
 
-    container.querySelectorAll('.m-track-row').forEach((row) => {
-      const idx = Number(row.dataset.idx);
-      const track = tracks[idx];
+    container.innerHTML = '';
+    const BATCH_SIZE = 30;
+    let renderedCount = 0;
+
+    const bindRow = (row, idx, track) => {
       let sx = 0;
       let sy = 0;
       let swiped = false;
@@ -1354,11 +1449,8 @@
         if (!pt || !sx) return;
         const dx = pt.clientX - sx;
         const dy = pt.clientY - sy;
-        if (dx > 64 && Math.abs(dy) < 28) {
-          row.classList.add('swipe-queue-ready');
-        } else {
-          row.classList.remove('swipe-queue-ready');
-        }
+        if (dx > 64 && Math.abs(dy) < 28) row.classList.add('swipe-queue-ready');
+        else row.classList.remove('swipe-queue-ready');
       }, { passive: true });
       row.addEventListener('touchend', (e) => {
         const pt = e.changedTouches && e.changedTouches[0];
@@ -1399,7 +1491,67 @@
         }
         playTrack(track, tracks, idx);
       };
-    });
+    };
+
+    const appendNextBatch = () => {
+      const end = Math.min(tracks.length, renderedCount + BATCH_SIZE);
+      if (renderedCount >= end) return;
+      const frag = document.createDocumentFragment();
+      for (let i = renderedCount; i < end; i += 1) {
+        const t = tracks[i];
+        const playing = state.currentTrack && trackKey(state.currentTrack) === trackKey(t);
+        const liked = isLiked(t);
+        const playCount = opts.showPlayCount ? Number(t.playCount || t.play_count) || 0 : 0;
+        const subText = playCount > 0
+          ? `${t.artist || 'Sanatçı'} · ${playCount} dinleme`
+          : (t.artist || 'Sanatçı');
+        const reorderHtml = opts.reorderMode && opts.playlistId
+          ? '<button class="m-row-btn" data-act="move-up" type="button" aria-label="Yukarı"><i class="fa-solid fa-arrow-up"></i></button><button class="m-row-btn" data-act="move-down" type="button" aria-label="Aşağı"><i class="fa-solid fa-arrow-down"></i></button>'
+          : '';
+        const row = document.createElement('div');
+        row.className = `m-track-row ${playing ? 'playing' : ''}`;
+        row.dataset.idx = String(i);
+        row.innerHTML = `
+          <img class="m-track-thumb" src="${escapeHtml(thumbUrl(t.thumbnail, 128))}" alt="" loading="lazy" decoding="async" />
+          <div class="m-track-meta">
+            <div class="m-track-title">${escapeHtml(t.title)}</div>
+            <div class="m-track-artist">${escapeHtml(subText)}</div>
+          </div>
+          <div class="m-track-actions">
+            ${reorderHtml}
+            <button class="m-row-btn ${liked ? 'liked' : ''}" data-act="like" type="button"><i class="${liked ? 'fa-solid' : 'fa-regular'} fa-heart"></i></button>
+            <button class="m-row-btn" data-act="more" type="button"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+          </div>`;
+        bindRow(row, i, t);
+        frag.appendChild(row);
+      }
+      renderedCount = end;
+      const oldSentinel = container.querySelector('.m-list-sentinel');
+      if (oldSentinel) container.insertBefore(frag, oldSentinel);
+      else container.appendChild(frag);
+      if (renderedCount >= tracks.length && oldSentinel) {
+        oldSentinel.remove();
+        if (container._batchObserver) {
+          try { container._batchObserver.disconnect(); } catch {}
+          container._batchObserver = null;
+        }
+      }
+    };
+
+    appendNextBatch();
+    if (renderedCount < tracks.length && typeof IntersectionObserver !== 'undefined') {
+      const sentinel = document.createElement('div');
+      sentinel.className = 'm-list-sentinel';
+      sentinel.style.height = '1px';
+      container.appendChild(sentinel);
+      const obs = new IntersectionObserver((entries) => {
+        if (entries.some((en) => en.isIntersecting)) appendNextBatch();
+      }, { rootMargin: '260px' });
+      obs.observe(sentinel);
+      container._batchObserver = obs;
+    } else {
+      while (renderedCount < tracks.length) appendNextBatch();
+    }
   }
 
   function openTrackMenuSheet(track, playlistId = null) {
@@ -1410,7 +1562,9 @@
         { icon: 'fa-forward-step', label: 'Sıradaki Çal (Hemen Sonra)', fn: () => { insertPlayNext(track); closeSheet(); } },
         { icon: 'fa-list-ul', label: 'Çalma Sırasına Ekle', fn: () => { state.queue.push(track); showToast('Sıraya eklendi.'); closeSheet(); } },
         { icon: 'fa-folder-plus', label: 'Çalma Listesine Ekle', fn: () => openAddToPlaylistSheet(track) },
-        { icon: 'fa-cloud-arrow-down', label: 'Çevrimdışı İndir', fn: () => { saveOffline(track); closeSheet(); } },
+        { icon: 'fa-cloud-arrow-down', label: 'MP3 Olarak İndir (İndirilenler)', fn: () => { saveOffline(track); closeSheet(); } },
+        { icon: 'fa-scissors', label: 'MP3 Kes / Zil Sesi Yap', fn: () => openMp3TrimmerSheet(track) },
+        { icon: 'fa-qrcode', label: 'QR Kod ile Paylaş', fn: () => openQrShareSheet('track', track) },
       ];
       if (window.SunifyRealtime?.getJamRoom()) {
         actions.splice(1, 0, {
@@ -1726,6 +1880,39 @@
     }
   }
 
+  async function loadDeviceMusic(askPermissionIfNeeded = false) {
+    if (bridge && typeof bridge.hasDeviceMusicPermission === 'function' && !bridge.hasDeviceMusicPermission()) {
+      if (askPermissionIfNeeded && typeof bridge.requestDeviceMusicPermission === 'function') {
+        window.__sunifyOnAudioPermResult = (granted) => {
+          if (granted) {
+            loadDeviceMusic(false).then(() => {
+              renderLibrary();
+              openDetail({
+                id: 'device-music',
+                name: 'Cihazdaki Müzikler',
+                subtitle: `${state.deviceTracks.length} parça`,
+                cover: state.deviceTracks[0]?.thumbnail || FALLBACK_ART,
+                tracks: state.deviceTracks,
+                readonly: true,
+              });
+            });
+          } else {
+            showToast('Cihaz müzikleri için depolama izni gerekli.');
+          }
+        };
+        bridge.requestDeviceMusicPermission();
+      }
+      return [];
+    }
+    try {
+      const data = await api('/api/device-music');
+      state.deviceTracks = Array.isArray(data.tracks) ? data.tracks : [];
+    } catch {
+      state.deviceTracks = [];
+    }
+    return state.deviceTracks;
+  }
+
   function renderLibrary() {
     const el = $('libraryGrid');
     const reorderBtn = $('libReorderBtn');
@@ -1733,6 +1920,7 @@
     const cards = [
       { type: 'liked', title: 'Beğenilen Şarkılar', sub: `${state.likedTracks.length} parça`, icon: 'fa-heart', cls: 'liked-grad' },
       { type: 'offline', title: 'İndirilenler', sub: `${state.offlineTracks.length} parça`, icon: 'fa-cloud-arrow-down', cls: 'offline-grad' },
+      { type: 'device', title: 'Cihazdaki Müzikler', sub: state.deviceTracks.length ? `${state.deviceTracks.length} yerel dosya` : 'Taramak için dokun', icon: 'fa-mobile-screen-button', cls: 'offline-grad' },
       ...state.playlists.map((pl, plIndex) => ({
         type: 'playlist',
         pl,
@@ -1748,13 +1936,13 @@
           ? `<div class="sfx-reorder-controls" style="justify-content:center;margin-top:4px;"><button class="m-row-btn" data-plmove="-1" data-pidx="${c.plIndex}" type="button" aria-label="Yukarı"><i class="fa-solid fa-arrow-left"></i></button><button class="m-row-btn" data-plmove="1" data-pidx="${c.plIndex}" type="button" aria-label="Aşağı"><i class="fa-solid fa-arrow-right"></i></button></div>`
           : '';
         return c.cover
-          ? `<div class="m-lib-card" data-li="${i}"><img class="m-lib-cover" src="${escapeHtml(c.cover)}" alt="" /><div class="m-card-title">${escapeHtml(c.title)}</div><div class="m-card-sub">${escapeHtml(c.sub)}</div>${reorderHtml}</div>`
+          ? `<div class="m-lib-card" data-li="${i}"><img class="m-lib-cover" src="${escapeHtml(thumbUrl(c.cover, 240))}" alt="" loading="lazy" decoding="async" /><div class="m-card-title">${escapeHtml(c.title)}</div><div class="m-card-sub">${escapeHtml(c.sub)}</div>${reorderHtml}</div>`
           : `<div class="m-lib-card" data-li="${i}"><div class="m-lib-cover ${c.cls}"><i class="fa-solid ${c.icon}"></i></div><div class="m-card-title">${escapeHtml(c.title)}</div><div class="m-card-sub">${escapeHtml(c.sub)}</div></div>`;
       })
       .join('');
 
     el.querySelectorAll('.m-lib-card').forEach((card) => {
-      card.onclick = (e) => {
+      card.onclick = async (e) => {
         const moveBtn = e.target.closest('button[data-plmove]');
         if (moveBtn) {
           e.stopPropagation();
@@ -1773,6 +1961,12 @@
           openDetail({ id: 'liked', name: 'Beğenilen Şarkılar', subtitle: item.sub, cover: state.likedTracks[0]?.thumbnail || FALLBACK_ART, tracks: state.likedTracks, readonly: true });
         } else if (item.type === 'offline') {
           openDetail({ id: 'offline', name: 'İndirilenler', subtitle: item.sub, cover: FALLBACK_ART, tracks: state.offlineTracks, readonly: true });
+        } else if (item.type === 'device') {
+          const list = await loadDeviceMusic(true);
+          if (list.length || !bridge?.hasDeviceMusicPermission || bridge.hasDeviceMusicPermission()) {
+            renderLibrary();
+            openDetail({ id: 'device-music', name: 'Cihazdaki Müzikler', subtitle: `${list.length} parça`, cover: list[0]?.thumbnail || FALLBACK_ART, tracks: list, readonly: true });
+          }
         } else {
           openDetail(item.pl);
         }
@@ -2360,7 +2554,8 @@
               <div style="font-size:12.5px;text-align:center;opacity:0.84;">${jam.isHost ? 'Ev sahibi sensin' : `Ev sahibi: ${escapeHtml(jam.hostName)}`} · ${(jam.members || []).length} katılımcı</div>
               <div style="display:flex;gap:8px;">
                 <button type="button" class="m-glass-btn" id="jamCopyCodeBtn" style="flex:1;"><i class="fa-solid fa-copy"></i> Kodu Kopyala</button>
-                <button type="button" class="m-glass-btn" id="jamLeaveBtn" style="flex:1;color:#ff8ea1;"><i class="fa-solid fa-right-from-bracket"></i> Odadan Çık</button>
+                <button type="button" class="m-glass-btn" id="jamQrCodeBtn" style="flex:1;"><i class="fa-solid fa-qrcode"></i> QR Paylaş</button>
+                <button type="button" class="m-glass-btn" id="jamLeaveBtn" style="flex:1;color:#ff8ea1;"><i class="fa-solid fa-right-from-bracket"></i> Çık</button>
               </div>
               ${state.currentTrack ? '<button type="button" class="m-glass-btn primary" id="jamAddCurBtn"><i class="fa-solid fa-plus"></i> Çalan Şarkıyı Jam Sırasına Ekle</button>' : ''}
               <div style="font-size:12px;font-weight:700;opacity:0.8;">Katılımcılar: ${(jam.members || []).map((m) => escapeHtml(m.name)).join(', ')}</div>
@@ -2434,6 +2629,10 @@
             showToast(`Kopyalandı: ${jam.code}`);
           };
         }
+        const qrBtn = wrap.querySelector('#jamQrCodeBtn');
+        if (qrBtn && jam) {
+          qrBtn.onclick = () => openQrShareSheet('jam', { code: jam.code });
+        }
         const lvBtn = wrap.querySelector('#jamLeaveBtn');
         if (lvBtn) {
           lvBtn.onclick = () => {
@@ -2456,6 +2655,350 @@
     });
   }
 
+  function updateAbLoopBtn() {
+    const btn = $('npAbLoopBtn');
+    if (!btn) return;
+    const { a, b } = state.abLoop;
+    const active = a !== null || b !== null;
+    btn.classList.toggle('primary', active);
+    btn.innerHTML = a !== null && b !== null
+      ? `<i class="fa-solid fa-arrows-left-right-to-line"></i> ${fmtTime(a)}–${fmtTime(b)}`
+      : a !== null
+        ? `<i class="fa-solid fa-arrows-left-right-to-line"></i> A:${fmtTime(a)}`
+        : '<i class="fa-solid fa-arrows-left-right-to-line"></i> A–B';
+  }
+
+  function openAbLoopSheet() {
+    if (!state.currentTrack) return showToast('Önce bir şarkı çalın.');
+    openSheet('Nakarat / A–B Döngü', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'm-auth-form';
+      const render = () => {
+        const { a, b } = state.abLoop;
+        wrap.innerHTML = `
+          <div class="m-empty-card" style="text-align:left;">
+            <strong>A Noktası:</strong> ${a !== null ? fmtTime(a) : 'Ayarlanmadı'}<br/>
+            <strong>B Noktası:</strong> ${b !== null ? fmtTime(b) : 'Ayarlanmadı'}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="m-glass-btn primary" id="abSetA" type="button" style="flex:1;">A Noktası (Şimdi)</button>
+            <button class="m-glass-btn primary" id="abSetB" type="button" style="flex:1;">B Noktası (Şimdi)</button>
+          </div>
+          <button class="m-glass-btn" id="abClear" type="button">Döngüyü Kapat</button>
+        `;
+        wrap.querySelector('#abSetA').onclick = () => {
+          state.abLoop.a = Math.max(0, audio.currentTime || 0);
+          if (state.abLoop.b !== null && state.abLoop.b <= state.abLoop.a + 1) state.abLoop.b = null;
+          updateAbLoopBtn();
+          render();
+          showToast(`A noktası: ${fmtTime(state.abLoop.a)}`);
+        };
+        wrap.querySelector('#abSetB').onclick = () => {
+          const cur = Math.max(1, audio.currentTime || 0);
+          if (state.abLoop.a === null) state.abLoop.a = Math.max(0, cur - 15);
+          if (cur <= state.abLoop.a + 1) return showToast('B noktası A noktasından sonra olmalı.');
+          state.abLoop.b = cur;
+          audio.currentTime = state.abLoop.a;
+          updateAbLoopBtn();
+          render();
+          showToast(`A–B döngü aktif: ${fmtTime(state.abLoop.a)} – ${fmtTime(state.abLoop.b)}`);
+        };
+        wrap.querySelector('#abClear').onclick = () => {
+          state.abLoop = { a: null, b: null };
+          updateAbLoopBtn();
+          closeSheet();
+          showToast('A–B döngüsü kapatıldı.');
+        };
+      };
+      render();
+      return wrap;
+    });
+  }
+
+  function openQrShareSheet(type, payload = {}) {
+    if (!window.SunifyQR) return showToast('QR modülü hazır değil.');
+    const url = window.SunifyQR.buildShareUrl(type, payload);
+    const titleText = type === 'jam'
+      ? `Jam Odası: ${payload.code || ''}`
+      : (payload.title || payload.name || 'Sunify Paylaşım');
+    openSheet('QR Kod ile Paylaş', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'm-auth-form';
+      wrap.style.alignItems = 'center';
+      wrap.innerHTML = `
+        <div style="background:#fff;padding:14px;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,0.35);">
+          <canvas id="qrShareCanvas"></canvas>
+        </div>
+        <strong style="text-align:center;">${escapeHtml(titleText)}</strong>
+        <div class="m-row-sub" style="text-align:center;word-break:break-all;">${escapeHtml(url)}</div>
+        <div style="display:flex;gap:8px;width:100%;">
+          <button class="m-glass-btn primary" id="qrShareImgBtn" type="button" style="flex:1;"><i class="fa-solid fa-share-nodes"></i> QR Paylaş</button>
+          <button class="m-glass-btn" id="qrCopyLinkBtn" type="button" style="flex:1;"><i class="fa-solid fa-copy"></i> Bağlantıyı Kopyala</button>
+        </div>
+      `;
+      const canvas = wrap.querySelector('#qrShareCanvas');
+      const dataUrl = window.SunifyQR.drawQrToCanvas(canvas, url, { size: 240 });
+      wrap.querySelector('#qrShareImgBtn').onclick = () => {
+        window.SunifyCards?.shareOrDownloadCard(dataUrl, `sunify-qr-${Date.now()}.png`, titleText);
+      };
+      wrap.querySelector('#qrCopyLinkBtn').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          showToast('Sunify bağlantısı kopyalandı.');
+        } catch {
+          showToast(url);
+        }
+      };
+      return wrap;
+    });
+  }
+
+  function openMp3TrimmerSheet(track) {
+    const target = track || state.currentTrack;
+    if (!target) return showToast('Önce bir şarkı seçin.');
+    const dur = Math.max(20, Math.floor(Number(audio.duration) || Number(target.duration) || 180));
+    const initStart = Math.min(Math.max(0, Math.floor(audio.currentTime || 0)), Math.max(0, dur - 15));
+    const initEnd = Math.min(dur, initStart + 25);
+
+    openSheet('MP3 Kesici & Zil Sesi', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'm-auth-form';
+      wrap.innerHTML = `
+        <div class="m-row-label">${escapeHtml(target.title || '')} · ${escapeHtml(target.artist || '')}</div>
+        <div class="m-setting-row"><span>Başlangıç</span><strong id="trimStartLbl">${fmtTime(initStart)}</strong></div>
+        <input type="range" id="trimStartSlider" min="0" max="${Math.max(1, dur - 5)}" value="${initStart}" />
+        <div class="m-setting-row"><span>Bitiş</span><strong id="trimEndLbl">${fmtTime(initEnd)}</strong></div>
+        <input type="range" id="trimEndSlider" min="5" max="${dur}" value="${initEnd}" />
+        <div class="m-row-sub" id="trimLenHint">Kesit süresi: ${initEnd - initStart} sn</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="m-glass-btn primary" id="trimSaveBtn" type="button" style="flex:1;"><i class="fa-solid fa-scissors"></i> Kes &amp; Kaydet</button>
+          <button class="m-glass-btn" id="trimShareBtn" type="button" style="flex:1;"><i class="fa-solid fa-share-nodes"></i> Kes &amp; Paylaş</button>
+        </div>
+        <button class="m-glass-btn" id="trimRingtoneBtn" type="button"><i class="fa-solid fa-bell"></i> Kes &amp; Telefon Zil Sesi Yap</button>
+      `;
+
+      const sEl = wrap.querySelector('#trimStartSlider');
+      const eEl = wrap.querySelector('#trimEndSlider');
+      const syncLabels = () => {
+        let sv = Number(sEl.value) || 0;
+        let ev = Number(eEl.value) || sv + 15;
+        if (ev <= sv + 2) {
+          ev = Math.min(dur, sv + 5);
+          eEl.value = String(ev);
+        }
+        wrap.querySelector('#trimStartLbl').textContent = fmtTime(sv);
+        wrap.querySelector('#trimEndLbl').textContent = fmtTime(ev);
+        wrap.querySelector('#trimLenHint').textContent = `Kesit süresi: ${ev - sv} sn`;
+      };
+      sEl.oninput = syncLabels;
+      eEl.oninput = syncLabels;
+
+      const runTrim = async (mode) => {
+        const startSec = Number(sEl.value) || 0;
+        const endSec = Math.max(startSec + 3, Number(eEl.value) || startSec + 20);
+        showToast('MP3 kesiliyor, lütfen bekleyin...');
+        try {
+          const res = await api('/api/trim-mp3', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: target.id || '',
+              title: target.title || '',
+              artist: target.artist || '',
+              localUrl: target.localUrl || '',
+              query: `${target.artist || ''} ${target.title || ''}`.trim(),
+              startSec,
+              endSec,
+              saveToDownloads: mode !== 'ringtone',
+            }),
+          });
+          if (mode === 'share' && bridge?.shareFilePath) {
+            bridge.shareFilePath(res.cachePath, 'audio/mpeg', `${target.title} Klip`);
+            showToast('Ses klibi paylaşıma hazır.');
+          } else if (mode === 'ringtone' && bridge?.setAsRingtone) {
+            const st = bridge.setAsRingtone(res.cachePath, `${target.title || 'Sunify'} Zil Sesi`);
+            if (st === 'ok') showToast('Telefon zil sesi olarak ayarlandı!');
+            else if (st === 'need_permission') showToast('Ayarlardan "Sistem ayarlarını değiştir" iznini açıp tekrar dokunun.');
+            else showToast('Zil sesi ayarlanamadı.');
+          } else {
+            showToast(`${res.displayPath || 'İndirilenler/Sunify/Klipler'} klasörüne kaydedildi.`);
+          }
+        } catch (err) {
+          showToast(err.message || 'MP3 kesilemedi.');
+        }
+      };
+
+      wrap.querySelector('#trimSaveBtn').onclick = () => runTrim('save');
+      wrap.querySelector('#trimShareBtn').onclick = () => runTrim('share');
+      wrap.querySelector('#trimRingtoneBtn').onclick = () => runTrim('ringtone');
+      return wrap;
+    });
+  }
+
+  function openLyricClipStorySheet() {
+    const track = state.currentTrack;
+    if (!track) return showToast('Önce bir şarkı çalın.');
+    const dur = Math.max(20, Math.floor(Number(audio.duration) || Number(track.duration) || 180));
+    const initStart = Math.min(Math.max(0, Math.floor(audio.currentTime || 0)), Math.max(0, dur - 15));
+    const initEnd = Math.min(dur, initStart + 15);
+
+    openSheet('Sözlü Story Videosu Oluştur (9:16)', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'm-auth-form';
+      wrap.innerHTML = `
+        <div class="m-row-sub">Üstte albüm kapağı &amp; şarkı adı, ortada senkronize kayan şarkı sözleri, gerçek şarkı sesiyle Instagram Story (.mp4) videosu.</div>
+        <div class="m-setting-row"><span>Başlangıç</span><strong id="clipStartLbl">${fmtTime(initStart)}</strong></div>
+        <input type="range" id="clipStartSlider" min="0" max="${Math.max(1, dur - 5)}" value="${initStart}" />
+        <div class="m-setting-row"><span>Bitiş (maks. 30 sn)</span><strong id="clipEndLbl">${fmtTime(initEnd)}</strong></div>
+        <input type="range" id="clipEndSlider" min="5" max="${dur}" value="${initEnd}" />
+        <div style="display:flex;gap:8px;">
+          <button class="m-glass-btn" id="clipUseCurStart" type="button" style="flex:1;">Başlangıcı Şimdi Yap</button>
+          <button class="m-glass-btn" id="clipUseCurEnd" type="button" style="flex:1;">Bitişi Şimdi Yap</button>
+        </div>
+        <div class="m-row-sub" id="clipLenLbl">Video süresi: ${initEnd - initStart} sn · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Söz bulunamadı (kapak + dalga modu)'}</div>
+        <button class="m-glass-btn primary" id="clipGenerateBtn" type="button"><i class="fa-solid fa-clapperboard"></i> Story Videosu Oluştur &amp; Paylaş</button>
+      `;
+
+      const sEl = wrap.querySelector('#clipStartSlider');
+      const eEl = wrap.querySelector('#clipEndSlider');
+      const syncClip = () => {
+        const sv = Number(sEl.value) || 0;
+        let ev = Number(eEl.value) || sv + 15;
+        if (ev < sv + 5) ev = Math.min(dur, sv + 5);
+        if (ev > sv + 30) ev = Math.min(dur, sv + 30);
+        eEl.value = String(ev);
+        wrap.querySelector('#clipStartLbl').textContent = fmtTime(sv);
+        wrap.querySelector('#clipEndLbl').textContent = fmtTime(ev);
+        wrap.querySelector('#clipLenLbl').textContent = `Video süresi: ${ev - sv} sn · ${state.lyrics.length ? `${state.lyrics.length} senkron söz satırı hazır` : 'Kapak + dalga modu'}`;
+      };
+      sEl.oninput = syncClip;
+      eEl.oninput = syncClip;
+      wrap.querySelector('#clipUseCurStart').onclick = () => {
+        sEl.value = String(Math.floor(audio.currentTime || 0));
+        syncClip();
+      };
+      wrap.querySelector('#clipUseCurEnd').onclick = () => {
+        eEl.value = String(Math.floor(audio.currentTime || 0));
+        syncClip();
+      };
+
+      wrap.querySelector('#clipGenerateBtn').onclick = async () => {
+        const btn = wrap.querySelector('#clipGenerateBtn');
+        const startSec = Number(sEl.value) || 0;
+        const endSec = Math.min(dur, Math.max(startSec + 5, Number(eEl.value) || startSec + 15));
+        btn.disabled = true;
+        btn.textContent = 'Story videosu işleniyor...';
+        showToast('HD Story videosu oluşturuluyor (birkaç saniye sürebilir)...');
+        try {
+          const res = await api('/api/story/lyric-clip-video', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: track.id || '',
+              title: track.title || '',
+              artist: track.artist || '',
+              thumbnail: track.thumbnail || '',
+              coverRgb: state.currentCoverRgb,
+              startSec,
+              endSec,
+              lyricsOffset: state.lyricsOffset || 0,
+              lyrics: (state.lyrics || []).map((l) => ({ time: l.time, text: l.text })),
+            }),
+          });
+          showToast(`Galeriye kaydedildi: ${res.displayPath}`);
+          if (bridge?.shareFilePath && res.cachePath) {
+            bridge.shareFilePath(res.cachePath, 'video/mp4', `${track.title} Story Videosu`);
+          }
+          closeSheet();
+        } catch (err) {
+          showToast(err.message || 'Story videosu oluşturulamadı.');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-clapperboard"></i> Story Videosu Oluştur &amp; Paylaş';
+        }
+      };
+      return wrap;
+    });
+  }
+
+  async function checkAppUpdates(manual = false) {
+    const statusEl = $('settingsUpdateStatus');
+    if (manual && statusEl) statusEl.textContent = 'Kontrol ediliyor...';
+    try {
+      const data = await api('/api/updates/latest');
+      if (data.updateAvailable && data.apkUrl) {
+        if (statusEl) statusEl.textContent = `Yeni sürüm mevcut: v${data.latestVersion}`;
+        openSheet(`Yeni Güncelleme: v${data.latestVersion}`, () => {
+          const wrap = document.createElement('div');
+          wrap.className = 'm-auth-form';
+          wrap.innerHTML = `
+            <div class="m-empty-card" style="text-align:left;white-space:pre-line;">${escapeHtml(data.notes || 'Performans ve yeni özellik iyileştirmeleri.')}</div>
+            <button class="m-glass-btn primary" id="doInstallUpdateBtn" type="button"><i class="fa-solid fa-download"></i> İndir ve Kur (v${escapeHtml(data.latestVersion)})</button>
+          `;
+          wrap.querySelector('#doInstallUpdateBtn').onclick = () => {
+            if (bridge?.installUpdateApk) {
+              bridge.installUpdateApk(data.apkUrl);
+              showToast('Yeni APK indiriliyor, bitince kurulum ekranı açılacak...');
+              closeSheet();
+            } else if (data.htmlUrl) {
+              window.open(data.htmlUrl, '_blank');
+            }
+          };
+          return wrap;
+        });
+      } else {
+        if (statusEl) statusEl.textContent = `Güncel (v${data.currentVersion || '1.2.1'})`;
+        if (manual) showToast('Uygulama güncel!');
+      }
+    } catch {
+      if (statusEl) statusEl.textContent = 'Kontrol edilemedi';
+      if (manual) showToast('Güncelleme sunucusuna ulaşılamadı.');
+    }
+  }
+
+  async function runSmartOfflineCache() {
+    if (state.smartCacheRunning) return;
+    if (localStorage.getItem('sunify_smart_cache') !== 'true') return;
+    if (bridge?.isWifiConnected && !bridge.isWifiConnected()) return;
+    const existing = new Set((state.offlineTracks || []).map((t) => trackKey(t)));
+    const topTargets = getTopListenedTracks(15).filter((t) => t && t.title && !existing.has(trackKey(t))).slice(0, 5);
+    if (!topTargets.length) return;
+    state.smartCacheRunning = true;
+    try {
+      for (let i = 0; i < topTargets.length; i += 1) {
+        if (localStorage.getItem('sunify_smart_cache') !== 'true') break;
+        if (bridge?.isWifiConnected && !bridge.isWifiConnected()) break;
+        await saveOffline(topTargets[i], { silent: true, skipReload: true });
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      await loadOfflineTracks();
+      renderLibrary();
+    } finally {
+      state.smartCacheRunning = false;
+    }
+  }
+
+  async function handleDeepLink(rawUrl) {
+    try {
+      const u = new URL(String(rawUrl || ''));
+      const type = u.searchParams.get('type') || '';
+      if (type === 'jam') {
+        const code = u.searchParams.get('code') || '';
+        const uname = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || 'Misafir';
+        if (code && window.SunifyRealtime?.joinJam) {
+          window.SunifyRealtime.joinJam(code, uname, getRealtimeHostAdapter());
+          showToast(`Jam odasına katılındı: ${code}`);
+        }
+      } else if (type === 'track') {
+        const id = u.searchParams.get('id') || '';
+        const title = u.searchParams.get('title') || '';
+        const artist = u.searchParams.get('artist') || '';
+        if (title || id) {
+          playTrack({ id, title: title || 'Paylaşılan Şarkı', artist, query: `${artist} ${title}`.trim() });
+          showToast(`Paylaşılan şarkı açıldı: ${title}`);
+        }
+      }
+    } catch {}
+  }
+
   function openWrappedSheet() {
     openSheet('Sunify Dinleme Özeti', () => {
       const wrap = document.createElement('div');
@@ -2468,6 +3011,13 @@
       const totalMinutes = Math.round(entries.reduce((s, e) => s + (Number(e.totalSeconds) || 0), 0) / 60);
       const streak = window.SunifyCards?.computeStreakAndHeatmap(state.listeningStats)?.streakDays || 0;
 
+      const artistCounts = new Map();
+      entries.forEach((e) => {
+        const c = Number(e.playCount) || 0;
+        if (c > 0 && e.artist) artistCounts.set(e.artist, (artistCounts.get(e.artist) || 0) + c);
+      });
+      const topArtists = [...artistCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, count]) => ({ name, count }));
+
       wrap.innerHTML = `
         <div class="m-stats-grid">
           <div class="m-stat-card"><div class="m-stat-val">${totalMinutes} dk</div><div class="m-stat-lbl">Toplam Süre</div></div>
@@ -2477,8 +3027,40 @@
           <div class="m-card-title" style="font-size:13.5px;"><i class="fa-solid fa-crown"></i> En Çok Dinlenen Parçalar</div>
           ${topTracks.length ? topTracks.map((t, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;"><span><strong>${i + 1}.</strong> ${escapeHtml(t.title)}</span><strong>${t.playCount}</strong></div>`).join('') : '<div class="m-empty-card">Henüz tam dinlenen şarkı yok.</div>'}
         </div>
-        <button type="button" class="m-glass-btn primary" id="wrappedShareBtn"><i class="fa-solid fa-share-nodes"></i> Hikaye Kartını Paylaş / Kaydet</button>
+        <button type="button" class="m-glass-btn primary" id="wrappedVideoBtn"><i class="fa-solid fa-clapperboard"></i> Dinleme Özeti Videosu (Instagram Story .mp4)</button>
+        <button type="button" class="m-glass-btn" id="wrappedShareBtn"><i class="fa-solid fa-image"></i> Özet Kartını Paylaş (PNG)</button>
       `;
+
+      wrap.querySelector('#wrappedVideoBtn').onclick = async () => {
+        const btn = wrap.querySelector('#wrappedVideoBtn');
+        btn.disabled = true;
+        btn.textContent = 'Özet videosu hazırlanıyor...';
+        showToast('Animasyonlu Story videosu oluşturuluyor...');
+        try {
+          const username = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || 'Sunify Dinleyicisi';
+          const res = await api('/api/story/wrapped-video', {
+            method: 'POST',
+            body: JSON.stringify({
+              username,
+              coverRgb: state.currentCoverRgb,
+              totalMinutes,
+              totalPlays,
+              streakDays: streak,
+              topTracks,
+              topArtists,
+            }),
+          });
+          showToast(`Galeriye kaydedildi: ${res.displayPath}`);
+          if (bridge?.shareFilePath && res.cachePath) {
+            bridge.shareFilePath(res.cachePath, 'video/mp4', 'Sunify Dinleme Özeti');
+          }
+        } catch (err) {
+          showToast(err.message || 'Özet videosu oluşturulamadı.');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-clapperboard"></i> Dinleme Özeti Videosu (Instagram Story .mp4)';
+        }
+      };
 
       wrap.querySelector('#wrappedShareBtn').onclick = async () => {
         showToast('Özet kartı oluşturuluyor...');
@@ -2614,6 +3196,12 @@
     $('npAudioFxBtn').onclick = () => openAudioFxSheet('eq');
     $('settingsOpenAudioFxBtn').onclick = () => openAudioFxSheet('eq');
     $('npSleepBtn').onclick = () => openAudioFxSheet('sleep');
+    if ($('npAbLoopBtn')) $('npAbLoopBtn').onclick = () => openAbLoopSheet();
+    if ($('npStoryClipBtn')) $('npStoryClipBtn').onclick = () => openLyricClipStorySheet();
+    if ($('npLyricsClipVideoBtn')) $('npLyricsClipVideoBtn').onclick = () => openLyricClipStorySheet();
+    if ($('npTrimBtn')) $('npTrimBtn').onclick = () => openMp3TrimmerSheet(state.currentTrack);
+    if ($('npQrShareBtn')) $('npQrShareBtn').onclick = () => state.currentTrack && openQrShareSheet('track', state.currentTrack);
+    if ($('checkUpdatesBtn')) $('checkUpdatesBtn').onclick = () => checkAppUpdates(true);
     $('homeOpenWrappedBtn').onclick = () => openWrappedSheet();
 
     $('miniOpenNowPlaying').onclick = () => {
@@ -2826,6 +3414,11 @@
         $('npDuration').textContent = fmtTime(dur);
       }
 
+      if (state.abLoop.a !== null && state.abLoop.b !== null && !audio.paused && cur >= state.abLoop.b) {
+        audio.currentTime = state.abLoop.a;
+        return;
+      }
+
       if (!audio.paused && nowMs - state.lastNotifPushAt >= 4000) {
         updateNotification();
       }
@@ -2835,6 +3428,22 @@
         trackKey: curKey,
         isPaused: audio.paused,
         isRepeatOne: state.repeat,
+        onPrewarmNext: () => {
+          if (state.queue.length > 1) {
+            const nextTrack = state.queue[(state.queueIndex + 1) % state.queue.length];
+            if (nextTrack && !nextTrack.localUrl) {
+              api('/api/audio-prefetch', {
+                method: 'POST',
+                body: JSON.stringify({
+                  id: nextTrack.id || '',
+                  title: nextTrack.title || '',
+                  artist: nextTrack.artist || '',
+                  query: `${nextTrack.artist || ''} ${nextTrack.title || ''}`.trim(),
+                }),
+              }).catch(() => {});
+            }
+          }
+        },
         onCrossfadeTrigger: () => {
           if (state.queue.length > 1) playNext();
         },
@@ -3077,6 +3686,14 @@
         showToast(wifiToggle.checked ? "Yalnızca Wi-Fi'da indirme açıldı." : 'Tüm ağlarda indirmeye izin verildi.');
       };
     }
+    const smartCacheToggle = $('settingSmartCache');
+    if (smartCacheToggle) {
+      smartCacheToggle.onchange = () => {
+        localStorage.setItem('sunify_smart_cache', String(smartCacheToggle.checked));
+        showToast(smartCacheToggle.checked ? "Akıllı Wi-Fi çevrimdışı önbellek açıldı." : 'Akıllı çevrimdışı önbellek kapatıldı.');
+        if (smartCacheToggle.checked) runSmartOfflineCache();
+      };
+    }
 
     $('sheetCloseBtn').onclick = closeSheet;
     $('sheetBackdrop').onclick = (e) => {
@@ -3093,6 +3710,8 @@
     };
     window.SunifyRealtime?.onDevicesChanged(updateConnectIndicators);
     window.SunifyRealtime?.onJamChanged(updateConnectIndicators);
+
+    window.__sunifyOnDeepLink = handleDeepLink;
 
     window.__sunifyOnAndroidMediaAction = (action) => {
       if (action === 'toggle') togglePlay();
@@ -3121,6 +3740,8 @@
     if (visEl) visEl.checked = window.SunifyAudioFX ? window.SunifyAudioFX.getState().visualizerEnabled : true;
     const wifiEl = $('settingWifiOnlyDl');
     if (wifiEl) wifiEl.checked = localStorage.getItem('sunify_wifi_only_dl') === 'true';
+    const smartEl = $('settingSmartCache');
+    if (smartEl) smartEl.checked = localStorage.getItem('sunify_smart_cache') === 'true';
     window.SunifyAudioFX?.attachVisualizer($('npVisualizerCanvas'), { bars: 26 });
     updatePlayerUI();
     renderAll({ deferMixFetch: true });
@@ -3130,9 +3751,14 @@
     } catch {}
     await initAuth();
     loadOfflineTracks().then(renderLibrary);
+    if (bridge?.hasDeviceMusicPermission?.()) {
+      loadDeviceMusic(false).then(renderLibrary);
+    }
     loadDailyChart();
     setTimeout(() => loadRecommendations(false), 300);
     setTimeout(() => renderDailyMixes(true), 800);
+    setTimeout(() => checkAppUpdates(false), 4500);
+    setTimeout(() => runSmartOfflineCache(), 8000);
   }
 
   document.addEventListener('DOMContentLoaded', boot);

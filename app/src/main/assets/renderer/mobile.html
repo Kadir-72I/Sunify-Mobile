@@ -248,6 +248,16 @@
               <span class="m-switch-slider"></span>
             </label>
           </div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Akıllı Çevrimdışı Önbellek (Wi-Fi)</div>
+              <div class="m-row-sub">En çok dinlenen ilk 15 şarkıyı Wi-Fi'da otomatik önbellekle</div>
+            </div>
+            <label class="m-switch">
+              <input type="checkbox" id="settingSmartCache" />
+              <span class="m-switch-slider"></span>
+            </label>
+          </div>
         </div>
 
         <div class="m-settings-card">
@@ -268,14 +278,21 @@
         </div>
 
         <div class="m-settings-card">
-          <div class="m-card-title"><i class="fa-solid fa-circle-info"></i> Hakkında</div>
+          <div class="m-card-title"><i class="fa-solid fa-circle-info"></i> Hakkında &amp; Güncelleme</div>
           <div class="m-setting-row">
             <span>Sürüm</span>
             <strong id="settingsVersionText">v1.2.1</strong>
           </div>
           <div class="m-setting-row">
             <span>Ses Motoru</span>
-            <span>NewPipeExtractor (Android)</span>
+            <span id="settingsAudioEngineText">Media3 ExoPlayer + NewPipe</span>
+          </div>
+          <div class="m-setting-row">
+            <div>
+              <div class="m-row-label">Uygulama Güncellemesi</div>
+              <div class="m-row-sub" id="settingsUpdateStatus">GitHub Releases üzerinden kontrol et</div>
+            </div>
+            <button class="m-glass-btn" id="checkUpdatesBtn" type="button">Denetle</button>
           </div>
         </div>
       </section>
@@ -358,7 +375,11 @@
         </div>
         <div class="m-np-extras">
           <button class="m-glass-btn" id="npAudioFxBtn" type="button"><i class="fa-solid fa-sliders"></i> Ses &amp; EQ</button>
+          <button class="m-glass-btn" id="npAbLoopBtn" type="button"><i class="fa-solid fa-arrows-left-right-to-line"></i> A–B</button>
           <button class="m-glass-btn" id="npSleepBtn" type="button"><i class="fa-solid fa-moon"></i> Uyku<span class="sfx-sleep-badge" id="npSleepBadge" hidden></span></button>
+          <button class="m-glass-btn" id="npStoryClipBtn" type="button"><i class="fa-solid fa-clapperboard"></i> Story</button>
+          <button class="m-glass-btn" id="npTrimBtn" type="button"><i class="fa-solid fa-scissors"></i> Kes/Zil</button>
+          <button class="m-glass-btn" id="npQrShareBtn" type="button"><i class="fa-solid fa-qrcode"></i> QR</button>
           <button class="m-glass-btn" id="npConnectBtn" type="button"><i class="fa-solid fa-tower-broadcast"></i> Cihaz/Jam</button>
           <button class="m-glass-btn" id="npSaveOfflineBtn" type="button"><i class="fa-solid fa-cloud-arrow-down"></i> İndir</button>
           <button class="m-glass-btn" id="npAddToPlaylistBtn" type="button"><i class="fa-solid fa-plus"></i> Ekle</button>
@@ -381,6 +402,7 @@
           <button type="button" class="m-lyrics-mini-btn" id="npLyricsAlignBtn" title="Çalan satıra dokunarak hizala"><i class="fa-solid fa-crosshairs"></i> Hizala</button>
           <button type="button" class="m-lyrics-mini-btn" id="npLyricsTranslateBtn" title="Türkçe çeviri">TR</button>
           <button type="button" class="m-lyrics-mini-btn" id="npLyricsCardModeBtn" title="Söz kartı oluştur"><i class="fa-solid fa-image"></i> Kart</button>
+          <button type="button" class="m-lyrics-mini-btn" id="npLyricsClipVideoBtn" title="Sözlü Story videosu oluştur"><i class="fa-solid fa-film"></i> Klip</button>
           <div class="m-lyrics-offset">
             <button type="button" id="npLyricsMinusBtn" aria-label="Gecikme azalt">-0.5s</button>
             <span id="npLyricsOffsetVal" title="Sıfırlamak için dokun">0.0s</span>
@@ -388,7 +410,7 @@
           </div>
         </div>
         <div class="sfx-lyric-card-bar" id="npLyricsCardBar" hidden>
-          <span id="npLyricsCardCount">1–4 satır seç (0/4)</span>
+          <span id="npLyricsCardCount">1–8 satır seç (0/8)</span>
           <div style="display:flex;gap:6px;">
             <button class="m-glass-btn primary" id="npLyricsCardShareBtn" type="button">Kartı Paylaş</button>
             <button class="m-glass-btn" id="npLyricsCardCancelBtn" type="button">İptal</button>
@@ -421,6 +443,7 @@
     <script src="sunify-audio-fx.js"></script>
     <script src="sunify-realtime.js"></script>
     <script src="sunify-cards.js"></script>
+    <script src="sunify-qr.js"></script>
     <script src="mobile-app.js"></script>
   </body>
 </html>
