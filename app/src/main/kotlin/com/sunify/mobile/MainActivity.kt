@@ -1,6 +1,7 @@
 package com.sunify.mobile
 
 import android.annotation.SuppressLint
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -338,11 +339,13 @@ class MainActivity : AppCompatActivity() {
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = "image/png"
                     putExtra(Intent.EXTRA_STREAM, contentUri)
+                    clipData = ClipData.newUri(contentResolver, shareTitle.ifBlank { "Sunify" }, contentUri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                runOnUiThread {
-                    startActivity(Intent.createChooser(shareIntent, shareTitle.ifBlank { "Sunify ile Paylaş" }))
+                val chooser = Intent.createChooser(shareIntent, shareTitle.ifBlank { "Sunify ile Paylaş" }).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
+                runOnUiThread { startActivity(chooser) }
                 true
             }.getOrDefault(false)
         }
@@ -351,16 +354,18 @@ class MainActivity : AppCompatActivity() {
         fun shareFilePath(filePath: String, mimeType: String, shareTitle: String): Boolean {
             return runCatching {
                 val file = File(filePath)
-                if (!file.exists()) return false
+                if (!file.exists() || file.length() < 1024L) return false
                 val contentUri = FileProvider.getUriForFile(this@MainActivity, "${packageName}.fileprovider", file)
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = mimeType.ifBlank { "*/*" }
                     putExtra(Intent.EXTRA_STREAM, contentUri)
+                    clipData = ClipData.newUri(contentResolver, shareTitle.ifBlank { "Sunify" }, contentUri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                runOnUiThread {
-                    startActivity(Intent.createChooser(shareIntent, shareTitle.ifBlank { "Sunify ile Paylaş" }))
+                val chooser = Intent.createChooser(shareIntent, shareTitle.ifBlank { "Sunify ile Paylaş" }).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
+                runOnUiThread { startActivity(chooser) }
                 true
             }.getOrDefault(false)
         }

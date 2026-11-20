@@ -328,15 +328,20 @@ object StoryVideoGenerator {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
                 setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                }
             }
 
-            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            encoder.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val inputSurface = encoder.createInputSurface()
-            encoder.start()
+            val enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            encoder = enc
+            enc.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val inputSurface = enc.createInputSurface()
+            enc.start()
 
-            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val mx = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxer = mx
             var videoTrackIndex = -1
             var audioTrackIndex = -1
             val bufferInfo = MediaCodec.BufferInfo()
@@ -344,24 +349,24 @@ object StoryVideoGenerator {
             var writtenVideoFrames = 0L
 
             fun drainEncoder(endOfStream: Boolean) {
-                if (endOfStream) encoder.signalEndOfInputStream()
+                if (endOfStream) enc.signalEndOfInputStream()
                 val timeoutUs = if (endOfStream) 5_000L else 0L
                 while (true) {
-                    val outIdx = encoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
+                    val outIdx = enc.dequeueOutputBuffer(bufferInfo, timeoutUs)
                     when {
                         outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             if (!endOfStream) break
                         }
                         outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            videoTrackIndex = muxer.addTrack(encoder.outputFormat)
+                            videoTrackIndex = mx.addTrack(enc.outputFormat)
                             if (audioFormat != null) {
-                                audioTrackIndex = muxer.addTrack(audioFormat!!)
+                                audioTrackIndex = mx.addTrack(audioFormat!!)
                             }
-                            muxer.start()
+                            mx.start()
                             muxerStarted = true
                         }
                         outIdx >= 0 -> {
-                            val encoded = encoder.getOutputBuffer(outIdx)
+                            val encoded = enc.getOutputBuffer(outIdx)
                             if (encoded != null && bufferInfo.size > 0 &&
                                 (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 &&
                                 muxerStarted
@@ -370,10 +375,10 @@ object StoryVideoGenerator {
                                 encoded.limit(bufferInfo.offset + bufferInfo.size)
                                 bufferInfo.presentationTimeUs = writtenVideoFrames * frameDurationUs
                                 writtenVideoFrames++
-                                muxer.writeSampleData(videoTrackIndex, encoded, bufferInfo)
+                                mx.writeSampleData(videoTrackIndex, encoded, bufferInfo)
                             }
                             val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                            encoder.releaseOutputBuffer(outIdx, false)
+                            enc.releaseOutputBuffer(outIdx, false)
                             if (isEos) break
                         }
                     }
@@ -405,19 +410,39 @@ object StoryVideoGenerator {
                 val firstPts = audioExtractor.sampleTime.coerceAtLeast(0L)
                 val audioBuf = ByteBuffer.allocate(256 * 1024)
                 val aInfo = MediaCodec.BufferInfo()
+                var lastAudioPts = -1L
                 while (true) {
                     val sampleSize = audioExtractor.readSampleData(audioBuf, 0)
                     if (sampleSize < 0) break
                     val pts = audioExtractor.sampleTime
-                    val relPts = (pts - firstPts).coerceAtLeast(0L)
+                    var relPts = (pts - firstPts).coerceAtLeast(0L)
+                    if (relPts <= lastAudioPts) relPts = lastAudioPts + 1000L
                     if (relPts > maxDurUs) break
+                    lastAudioPts = relPts
                     aInfo.offset = 0
                     aInfo.size = sampleSize
                     aInfo.presentationTimeUs = relPts
-                    aInfo.flags = audioExtractor.sampleFlags
-                    muxer.writeSampleData(audioTrackIndex, audioBuf, aInfo)
+                    aInfo.flags = if ((audioExtractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME
+                    } else 0
+                    mx.writeSampleData(audioTrackIndex, audioBuf, aInfo)
                     audioExtractor.advance()
                 }
+            }
+
+            // KRİTİK: moov atomunun yazılması için muxer.stop() & release() galeri kopyasından ÖNCE bitmeli!
+            runCatching { enc.stop() }
+            runCatching { enc.release() }
+            encoder = null
+            if (muxerStarted) {
+                mx.stop()
+                muxerStarted = false
+            }
+            mx.release()
+            muxer = null
+
+            if (!outFile.exists() || outFile.length() < 8192L) {
+                throw IllegalStateException("Video dosyası oluşturulamadı.")
             }
 
             val displayPath = saveVideoToGallery(context, outFile, fileName)
