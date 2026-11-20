@@ -1367,3 +1367,449 @@ body[data-theme='light'] .m-dock {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.48);
 }
+
+/* ── Authentic Spotify Wrapped Full-Screen Story Experience ── */
+@keyframes wrapSlideUp {
+  from { opacity: 0; transform: translateY(28px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes wrapPopIn {
+  0% { opacity: 0; transform: scale(0.78) rotate(-3deg); }
+  70% { opacity: 1; transform: scale(1.04) rotate(0.6deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+
+@keyframes wrapRibbonFloat {
+  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate(16px, -18px) rotate(6deg) scale(1.06); }
+}
+
+@keyframes wrapBarGrow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+@keyframes wrapBarGrowX {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.m-wrapped-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  background: #121212;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.m-wrapped-topbar {
+  position: relative;
+  z-index: 20;
+  padding: calc(env(safe-area-inset-top, 14px) + 10px) 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.m-wrapped-segs {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+
+.m-wrapped-seg {
+  flex: 1;
+  height: 3.5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+
+.m-wrapped-seg-fill {
+  height: 100%;
+  width: 0%;
+  background: #fff;
+  border-radius: 999px;
+}
+
+.m-wrapped-seg.done .m-wrapped-seg-fill {
+  width: 100%;
+}
+
+.m-wrapped-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.m-wrapped-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.34);
+  color: #fff;
+  backdrop-filter: blur(8px);
+}
+
+.m-wrapped-brand-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #1ed760;
+}
+
+.m-wrapped-head-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m-wrapped-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.m-wrapped-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 12px 22px calc(env(safe-area-inset-bottom, 16px) + 18px);
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.m-wrapped-bg-decor {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.m-wrapped-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(42px);
+  animation: wrapRibbonFloat 7s ease-in-out infinite;
+}
+
+.m-wrapped-stripe {
+  position: absolute;
+  border-radius: 999px;
+  opacity: 0.22;
+  animation: wrapRibbonFloat 9s ease-in-out infinite;
+}
+
+.m-wrapped-kicker {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  animation: wrapSlideUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.m-wrapped-hero {
+  font-size: clamp(36px, 11vw, 56px);
+  font-weight: 900;
+  line-height: 0.96;
+  letter-spacing: -0.04em;
+  margin: 8px 0 12px;
+  animation: wrapSlideUp 0.52s cubic-bezier(0.22, 1, 0.36, 1) 0.06s both;
+}
+
+.m-wrapped-giant {
+  font-size: clamp(54px, 16vw, 84px);
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: -0.05em;
+  animation: wrapPopIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
+}
+
+.m-wrapped-sub {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.38;
+  opacity: 0.9;
+  animation: wrapSlideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.14s both;
+}
+
+.m-wrapped-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 800;
+  width: fit-content;
+  animation: wrapPopIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+
+.m-wrapped-cover-frame {
+  width: min(230px, 62vw);
+  height: min(230px, 62vw);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 12px 12px 0 #121212, 0 20px 44px rgba(0, 0, 0, 0.35);
+  border: 3px solid #121212;
+  margin: 14px 0 18px;
+  animation: wrapPopIn 0.65s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+}
+
+.m-wrapped-cover-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.m-wrapped-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.m-wrapped-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.18);
+  animation: wrapSlideUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.m-wrapped-rank {
+  font-size: 26px;
+  font-weight: 900;
+  width: 26px;
+  text-align: center;
+  letter-spacing: -0.04em;
+  flex-shrink: 0;
+}
+
+.m-wrapped-mini-art {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.m-wrapped-row-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.m-wrapped-row-title {
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-wrapped-row-sub {
+  font-size: 12.5px;
+  font-weight: 600;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-wrapped-days-chart {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  align-items: end;
+  height: 148px;
+  margin: 16px 0 12px;
+  padding: 14px 10px 8px;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.m-wrapped-day-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  justify-content: flex-end;
+}
+
+.m-wrapped-day-bar {
+  width: 100%;
+  max-width: 28px;
+  border-radius: 8px 8px 4px 4px;
+  transform-origin: bottom;
+  animation: wrapBarGrow 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.m-wrapped-day-lbl {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.m-wrapped-hbar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.m-wrapped-hbar-track {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.m-wrapped-hbar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transform-origin: left;
+  animation: wrapBarGrowX 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Final Master Spotify Wrapped Poster Card */
+.m-wrapped-master {
+  border-radius: 22px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.45);
+  animation: wrapPopIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.m-wrapped-master-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.m-wrapped-master-art {
+  width: 82px;
+  height: 82px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.m-wrapped-master-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.m-wrapped-master-col-h {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 5px;
+}
+
+.m-wrapped-master-item {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.42;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-wrapped-master-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid currentColor;
+  border-top-color: rgba(255, 255, 255, 0.18);
+}
+
+.m-wrapped-theme-dots {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.m-wrapped-theme-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+}
+
+.m-wrapped-theme-dot.active {
+  border-color: #fff;
+  transform: scale(1.16);
+}
+
+.m-wrapped-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  position: relative;
+  z-index: 25;
+}
+
+.m-wrapped-cta {
+  width: 100%;
+  padding: 13px 18px;
+  border-radius: 999px;
+  border: 0;
+  font-size: 14px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.m-wrapped-cta.primary {
+  background: #1ed760;
+  color: #121212;
+}
+
+.m-wrapped-cta.secondary {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}

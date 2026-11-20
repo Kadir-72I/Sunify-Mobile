@@ -39,7 +39,9 @@ class LocalApiServer(
     private val thumbCacheDir: File by lazy { File(context.cacheDir, "SunifyThumbCache").apply { mkdirs() } }
 
     init {
-        val pool = Executors.newFixedThreadPool(10)
+        val pool = Executors.newFixedThreadPool(24) { r ->
+            Thread(r, "sunify-http").apply { isDaemon = true }
+        }
         setAsyncRunner(object : AsyncRunner {
             private val running = java.util.Collections.synchronizedList(ArrayList<ClientHandler>())
             override fun closeAll() {
@@ -936,48 +938,71 @@ class LocalApiServer(
             ).apply {
                 addHeader("Access-Control-Allow-Origin", "*")
                 addHeader("Cache-Control", "public, max-age=604800")
+                addHeader("Connection", "close")
+            }
+        }
+
+        fun fetchBytes(urlStr: String): Pair<ByteArray, String>? {
+            val req = Request.Builder()
+                .url(urlStr)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
+                .build()
+            return OkHttpDownloader.sharedClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val bytes = resp.body?.bytes() ?: return@use null
+                if (bytes.size < 100) return@use null
+                val ct = resp.header("Content-Type")?.substringBefore(";")?.trim().orEmpty().ifBlank { "image/jpeg" }
+                bytes to ct
             }
         }
 
         return runCatching {
-            val req = Request.Builder()
-                .url(rawUrl)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
-                .build()
-            OkHttpDownloader.sharedClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return errorResponse(Response.Status.NOT_FOUND, "Görsel yok.")
-                val rawBytes = resp.body?.bytes() ?: return errorResponse(Response.Status.NOT_FOUND, "Boş görsel.")
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
-                var sample = 1
-                val maxDim = max(bounds.outWidth, bounds.outHeight)
-                while (maxDim / sample > targetSize * 2 && sample < 32) sample *= 2
-                val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, BitmapFactory.Options().apply {
-                    inSampleSize = sample
-                }) ?: return errorResponse(Response.Status.INTERNAL_ERROR, "Görsel çözülemedi.")
-                val scaled = if (decoded.width > targetSize || decoded.height > targetSize) {
-                    val ratio = targetSize.toFloat() / max(decoded.width, decoded.height).toFloat()
-                    val nw = max(1, (decoded.width * ratio).toInt())
-                    val nh = max(1, (decoded.height * ratio).toInt())
-                    Bitmap.createScaledBitmap(decoded, nw, nh, true).also {
-                        if (it !== decoded) decoded.recycle()
-                    }
-                } else decoded
-                val baos = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 78, baos)
-                scaled.recycle()
-                val outBytes = baos.toByteArray()
-                runCatching {
-                    val files = thumbCacheDir.listFiles()
-                    if (files != null && files.size > 450) {
-                        files.sortedBy { it.lastModified() }.take(120).forEach { it.delete() }
-                    }
-                    cacheFile.writeBytes(outBytes)
-                }
-                newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(outBytes), outBytes.size.toLong()).apply {
+            var fetched = fetchBytes(rawUrl)
+            if (fetched == null && rawUrl.contains("ytimg.com/vi/")) {
+                val fallbackYt = rawUrl
+                    .replace("maxresdefault.jpg", "hqdefault.jpg")
+                    .replace("sddefault.jpg", "hqdefault.jpg")
+                if (fallbackYt != rawUrl) fetched = fetchBytes(fallbackYt)
+            }
+            val (rawBytes, contentType) = fetched ?: return errorResponse(Response.Status.NOT_FOUND, "Görsel yok.")
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
+            var sample = 1
+            val maxDim = max(bounds.outWidth, bounds.outHeight)
+            while (maxDim / sample > targetSize * 2 && sample < 32) sample *= 2
+            val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, BitmapFactory.Options().apply {
+                inSampleSize = sample
+            })
+            if (decoded == null) {
+                return newFixedLengthResponse(Response.Status.OK, contentType, ByteArrayInputStream(rawBytes), rawBytes.size.toLong()).apply {
                     addHeader("Access-Control-Allow-Origin", "*")
                     addHeader("Cache-Control", "public, max-age=604800")
+                    addHeader("Connection", "close")
                 }
+            }
+            val scaled = if (decoded.width > targetSize || decoded.height > targetSize) {
+                val ratio = targetSize.toFloat() / max(decoded.width, decoded.height).toFloat()
+                val nw = max(1, (decoded.width * ratio).toInt())
+                val nh = max(1, (decoded.height * ratio).toInt())
+                Bitmap.createScaledBitmap(decoded, nw, nh, true).also {
+                    if (it !== decoded) decoded.recycle()
+                }
+            } else decoded
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+            scaled.recycle()
+            val outBytes = baos.toByteArray()
+            runCatching {
+                val files = thumbCacheDir.listFiles()
+                if (files != null && files.size > 450) {
+                    files.sortedBy { it.lastModified() }.take(120).forEach { it.delete() }
+                }
+                cacheFile.writeBytes(outBytes)
+            }
+            newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(outBytes), outBytes.size.toLong()).apply {
+                addHeader("Access-Control-Allow-Origin", "*")
+                addHeader("Cache-Control", "public, max-age=604800")
+                addHeader("Connection", "close")
             }
         }.getOrElse { errorResponse(Response.Status.INTERNAL_ERROR, "Küçük resim üretilemedi.") }
     }

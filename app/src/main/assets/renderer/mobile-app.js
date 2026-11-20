@@ -164,6 +164,16 @@
 
   const audio = createAudioEngine();
 
+  function resolveTrackThumbRaw(track) {
+    const raw = String(track?.thumbnail || '').trim();
+    if (raw) return raw;
+    const tid = String(track?.id || '').trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(tid)) {
+      return `https://i.ytimg.com/vi/${tid}/hqdefault.jpg`;
+    }
+    return '';
+  }
+
   function thumbUrl(url, size = 128) {
     const raw = String(url || '').trim();
     if (!raw || raw.startsWith('data:') || raw.startsWith('http://127.0.0.1:')) return raw || FALLBACK_ART;
@@ -171,6 +181,68 @@
       return `${API}/api/thumb?url=${encodeURIComponent(raw)}&w=${size}`;
     }
     return raw;
+  }
+
+  const coverLookupCache = new Map();
+  function attachCoverFallback(imgEl, track) {
+    if (!imgEl || !track) return;
+    const raw = resolveTrackThumbRaw(track);
+    const tid = String(track.id || '').trim();
+    const ytFallback = /^[a-zA-Z0-9_-]{11}$/.test(tid) ? `https://i.ytimg.com/vi/${tid}/hqdefault.jpg` : '';
+    let step = 0;
+
+    const tryLookup = () => {
+      const cacheKey = `${String(track.artist || '').toLowerCase()}|${String(track.title || '').toLowerCase()}`;
+      if (!track.title) {
+        imgEl.src = FALLBACK_ART;
+        return;
+      }
+      if (coverLookupCache.has(cacheKey)) {
+        const cached = coverLookupCache.get(cacheKey);
+        imgEl.src = cached || FALLBACK_ART;
+        return;
+      }
+      coverLookupCache.set(cacheKey, '');
+      const qs = new URLSearchParams({ artist: track.artist || '', title: track.title || '' });
+      fetch(`${API}/api/track-cover?${qs.toString()}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          const found = String(d?.thumbnail || '').trim();
+          if (found) {
+            coverLookupCache.set(cacheKey, found);
+            track.thumbnail = found;
+            if (imgEl.isConnected) imgEl.src = found;
+          } else if (imgEl.isConnected) {
+            imgEl.src = FALLBACK_ART;
+          }
+        })
+        .catch(() => {
+          if (imgEl.isConnected) imgEl.src = FALLBACK_ART;
+        });
+    };
+
+    imgEl.onerror = () => {
+      step += 1;
+      if (step === 1 && raw && imgEl.src !== raw) {
+        imgEl.src = raw;
+        return;
+      }
+      if (step === 2 && ytFallback && imgEl.src !== ytFallback) {
+        imgEl.src = ytFallback;
+        return;
+      }
+      if (step === 3) {
+        tryLookup();
+        return;
+      }
+      imgEl.onerror = null;
+      imgEl.src = FALLBACK_ART;
+    };
+
+    if (!raw) {
+      imgEl.src = FALLBACK_ART;
+      tryLookup();
+    }
   }
 
   const $ = (id) => document.getElementById(id);
@@ -1542,8 +1614,9 @@
         const row = document.createElement('div');
         row.className = `m-track-row ${playing ? 'playing' : ''}`;
         row.dataset.idx = String(i);
+        const rawThumb = resolveTrackThumbRaw(t);
         row.innerHTML = `
-          <img class="m-track-thumb" src="${escapeHtml(thumbUrl(t.thumbnail, 128))}" alt="" loading="lazy" decoding="async" />
+          <img class="m-track-thumb" src="${escapeHtml(thumbUrl(rawThumb, 128))}" alt="" loading="lazy" decoding="async" />
           <div class="m-track-meta">
             <div class="m-track-title">${escapeHtml(t.title)}</div>
             <div class="m-track-artist">${escapeHtml(subText)}</div>
@@ -1553,6 +1626,7 @@
             <button class="m-row-btn ${liked ? 'liked' : ''}" data-act="like" type="button"><i class="${liked ? 'fa-solid' : 'fa-regular'} fa-heart"></i></button>
             <button class="m-row-btn" data-act="more" type="button"><i class="fa-solid fa-ellipsis-vertical"></i></button>
           </div>`;
+        attachCoverFallback(row.querySelector('.m-track-thumb'), t);
         bindRow(row, i, t);
         frag.appendChild(row);
       }
@@ -3212,100 +3286,476 @@
   }
 
   function openWrappedSheet() {
-    openSheet('Sunify Dinleme Özeti', () => {
-      const wrap = document.createElement('div');
-      wrap.className = 'm-auth-form';
-      const topTracks = getTopListenedTracks(5);
-      const entries = Object.entries(state.listeningStats || {})
-        .filter(([k, v]) => !k.startsWith('__') && v && typeof v === 'object' && v.title)
-        .map(([, v]) => v);
-      const totalPlays = entries.reduce((s, e) => s + (Number(e.playCount) || 0), 0);
-      const totalMinutes = Math.round(entries.reduce((s, e) => s + (Number(e.totalSeconds) || 0), 0) / 60);
-      const streak = window.SunifyCards?.computeStreakAndHeatmap(state.listeningStats)?.streakDays || 0;
+    const existing = document.getElementById('sunifyWrappedStoryOverlay');
+    if (existing) existing.remove();
 
-      const artistCounts = new Map();
-      entries.forEach((e) => {
-        const c = Number(e.playCount) || 0;
-        if (c > 0 && e.artist) artistCounts.set(e.artist, (artistCounts.get(e.artist) || 0) + c);
-      });
-      const topArtists = [...artistCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, count]) => ({ name, count }));
+    const topTracks = getTopListenedTracks(5);
+    const entries = Object.entries(state.listeningStats || {})
+      .filter(([k, v]) => !k.startsWith('__') && v && typeof v === 'object' && v.title)
+      .map(([, v]) => v);
+    const totalPlays = entries.reduce((s, e) => s + (Number(e.playCount) || 0), 0);
+    const totalMinutes = Math.round(entries.reduce((s, e) => s + (Number(e.totalSeconds) || 0), 0) / 60);
+    const totalHours = Math.max(1, Math.round(totalMinutes / 60));
+    const streak = window.SunifyCards?.computeStreakAndHeatmap(state.listeningStats)?.streakDays || 0;
 
-      const insights = computeWrappedInsights(state.listeningStats);
-      const topMonthLbl = insights.topMonths[0] ? `${insights.topMonths[0].label} (${insights.topMonths[0].minutes} dk)` : '—';
-
-      wrap.innerHTML = `
-        <div class="m-stats-grid">
-          <div class="m-stat-card"><div class="m-stat-val">${totalMinutes} dk</div><div class="m-stat-lbl">Toplam Süre · ${insights.uniqueTracks} parça</div></div>
-          <div class="m-stat-card"><div class="m-stat-val">${totalPlays} · ${streak} gün</div><div class="m-stat-lbl">Tam Dinleme &amp; Seri</div></div>
-          <div class="m-stat-card"><div class="m-stat-val">${escapeHtml(insights.peakWeekday)}</div><div class="m-stat-lbl">En Aktif Gün</div></div>
-          <div class="m-stat-card"><div class="m-stat-val">${escapeHtml(insights.peakHourMood)}</div><div class="m-stat-lbl">${escapeHtml(insights.peakHourLabel)}</div></div>
-        </div>
-        <div class="m-row-sub" style="text-align:center;">Zirve Ay: <strong>${escapeHtml(topMonthLbl)}</strong> · ${insights.uniqueArtists} farklı sanatçı</div>
-        <div class="m-settings-card" style="padding:12px;">
-          <div class="m-card-title" style="font-size:13.5px;"><i class="fa-solid fa-crown"></i> En Çok Dinlenen Parçalar</div>
-          ${topTracks.length ? topTracks.map((t, i) => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;"><span><strong>${i + 1}.</strong> ${escapeHtml(t.title)}</span><strong>${t.playCount}</strong></div>`).join('') : '<div class="m-empty-card">Henüz tam dinlenen şarkı yok.</div>'}
-        </div>
-        <button type="button" class="m-glass-btn primary" id="wrappedVideoBtn"><i class="fa-solid fa-clapperboard"></i> 32 sn Sunify Wrapped Videosu (.mp4)</button>
-        <button type="button" class="m-glass-btn" id="wrappedShareBtn"><i class="fa-solid fa-image"></i> Özet Kartını Paylaş (PNG)</button>
-      `;
-
-      wrap.querySelector('#wrappedVideoBtn').onclick = async () => {
-        const btn = wrap.querySelector('#wrappedVideoBtn');
-        btn.disabled = true;
-        showStoryProgressOverlay('Sunify Wrapped Videosu');
-        try {
-          const username = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || 'Sunify Dinleyicisi';
-          const res = await api('/api/story/wrapped-video', {
-            method: 'POST',
-            body: JSON.stringify({
-              username,
-              coverRgb: state.currentCoverRgb,
-              totalMinutes,
-              totalPlays,
-              streakDays: streak,
-              uniqueTracks: insights.uniqueTracks,
-              uniqueArtists: insights.uniqueArtists,
-              weekdayMinutes: insights.weekdayMinutes,
-              peakWeekday: insights.peakWeekday,
-              topMonths: insights.topMonths,
-              peakHour: insights.peakHour,
-              peakHourLabel: insights.peakHourLabel,
-              peakHourMood: insights.peakHourMood,
-              topTracks,
-              topArtists,
-            }),
-          });
-          hideStoryProgressOverlay();
-          showToast(`Galeriye kaydedildi: ${res.displayPath}`);
-          if (bridge?.shareFilePath && res.cachePath) {
-            bridge.shareFilePath(res.cachePath, 'video/mp4', 'Sunify Dinleme Özeti');
-          }
-        } catch (err) {
-          hideStoryProgressOverlay();
-          showToast(err.message || 'Özet videosu oluşturulamadı.');
-        } finally {
-          hideStoryProgressOverlay();
-          btn.disabled = false;
-        }
-      };
-
-      wrap.querySelector('#wrappedShareBtn').onclick = async () => {
-        showToast('Özet kartı oluşturuluyor...');
-        try {
-          const username = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || '';
-          const url = await window.SunifyCards.generateWrappedCardDataUrl({
-            stats: state.listeningStats,
-            username,
-            coverRgb: state.currentCoverRgb,
-            apiBase: API,
-          });
-          window.SunifyCards.shareOrDownloadCard(url, `sunify-ozet-${Date.now()}.png`, 'Sunify Dinleme Özeti');
-        } catch {
-          showToast('Özet kartı oluşturulamadı.');
-        }
-      };
-      return wrap;
+    const artistCounts = new Map();
+    entries.forEach((e) => {
+      const c = Number(e.playCount) || 0;
+      if (c > 0 && e.artist) artistCounts.set(e.artist, (artistCounts.get(e.artist) || 0) + c);
     });
+    const topArtists = [...artistCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    const insights = computeWrappedInsights(state.listeningStats);
+    const username = state.auth.user?.user_metadata?.username || state.auth.user?.email?.split('@')[0] || 'Sunify Dinleyicisi';
+    const yearNow = new Date().getFullYear();
+
+    // Realistic Spotify Wrapped percentile & persona
+    const topPercentile = totalMinutes >= 15000 ? 1 : totalMinutes >= 6000 ? 3 : totalMinutes >= 2500 ? 7 : totalMinutes >= 800 ? 15 : 28;
+    const fanPercentile = (topArtists[0]?.count || 0) >= 40 ? '0,5' : (topArtists[0]?.count || 0) >= 20 ? '1' : (topArtists[0]?.count || 0) >= 10 ? '3' : '5';
+
+    let personaTitle = 'Vibe Mimarı';
+    let personaDesc = 'Her anın duygusunu yakalayan, çalma listeleriyle ortama ruh katan dinleyici.';
+    if (insights.peakHour >= 22 || insights.peakHour <= 4) {
+      personaTitle = 'Gece Melodisi Tutkunu';
+      personaDesc = 'Şehir uyurken kulaklığın en yüksek ritimde çalışır. Gece saatleri senin gerçek sahnen.';
+    } else if (totalMinutes >= 1200) {
+      personaTitle = 'Durdurulamaz Müzik Aşığı';
+      personaDesc = 'Müziği bir arka plan sesi değil, gününün ana motoru olarak yaşıyorsun.';
+    } else if (streak >= 7) {
+      personaTitle = 'Sadık Ritim Yolcusu';
+      personaDesc = 'Günün nasıl geçerse geçsin ritmi hiç bırakmadın. İstikrarlı dinleme serinle fark yarattın.';
+    } else if (insights.uniqueArtists >= 12) {
+      personaTitle = 'Türler Arası Kaşif';
+      personaDesc = 'Tek bir kalıba sığmıyorsun; sürekli yeni sanatçılar ve taze tınılar keşfediyorsun.';
+    }
+
+    const totalArtistPlays = Math.max(1, topArtists.reduce((s, a) => s + a.count, 0));
+    const maxDayMin = Math.max(1, ...insights.weekdayMinutes);
+    const maxMonthMin = Math.max(1, ...insights.topMonths.map((m) => m.minutes));
+    const dayLabels = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
+    const firstTrack = topTracks[0] || null;
+    const firstThumb = firstTrack ? thumbUrl(resolveTrackThumbRaw(firstTrack), 320) : FALLBACK_ART;
+
+    const cardThemes = [
+      { id: 'black', bg: '#121212', fg: '#ffffff', accent: '#1ed760', sub: 'rgba(255,255,255,0.72)' },
+      { id: 'lime', bg: '#d2e798', fg: '#121212', accent: '#121212', sub: 'rgba(18,18,18,0.72)' },
+      { id: 'pink', bg: '#ff4d8d', fg: '#121212', accent: '#121212', sub: 'rgba(18,18,18,0.75)' },
+      { id: 'purple', bg: '#7d3cff', fg: '#ffffff', accent: '#ffe600', sub: 'rgba(255,255,255,0.78)' },
+    ];
+    let selectedThemeIdx = 0;
+
+    const slides = [
+      {
+        bg: '#121212',
+        fg: '#ffffff',
+        decor: `
+          <div class="m-wrapped-blob" style="width:280px;height:280px;top:-60px;right:-70px;background:#1ed760;opacity:0.45;"></div>
+          <div class="m-wrapped-blob" style="width:260px;height:260px;bottom:-50px;left:-60px;background:#ff4d8d;opacity:0.42;animation-delay:-2.5s;"></div>
+          <div class="m-wrapped-stripe" style="width:360px;height:44px;top:24%;left:-60px;background:#7d3cff;transform:rotate(-18deg);"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker" style="color:#1ed760;">${yearNow} ÖZETİN HAZIR</div>
+          <div class="m-wrapped-hero">Sunify<br/>Wrapped</div>
+          <div class="m-wrapped-sub">Bu yıl kulaklığından geçen her ritmi, her zirve anını senin için bir araya getirdik.</div>
+          <div class="m-wrapped-pill" style="background:#1ed760;color:#121212;margin-top:24px;"><i class="fa-solid fa-headphones"></i> ${escapeHtml(username)}</div>
+        `,
+      },
+      {
+        bg: '#ff4d8d',
+        fg: '#121212',
+        decor: `
+          <div class="m-wrapped-blob" style="width:240px;height:240px;top:-40px;left:-60px;background:#ffe600;opacity:0.5;"></div>
+          <div class="m-wrapped-stripe" style="width:420px;height:52px;bottom:14%;right:-90px;background:#121212;transform:rotate(-14deg);"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker">BU YIL MÜZİĞE DOYDUN</div>
+          <div class="m-wrapped-giant" style="margin:12px 0 6px;">${totalMinutes.toLocaleString('tr-TR')}</div>
+          <div class="m-wrapped-hero" style="font-size:32px;margin:0 0 14px;">dakika dinledin</div>
+          <div class="m-wrapped-sub">Bu tam <strong>${totalHours} saat</strong> kesintisiz müzik demek.<br/>Yıl boyunca <strong>${insights.uniqueTracks} farklı parça</strong> ve <strong>${insights.uniqueArtists} sanatçı</strong> keşfettin.</div>
+          <div class="m-wrapped-pill" style="background:#121212;color:#ffe600;margin-top:22px;"><i class="fa-solid fa-fire"></i> En aktif %${topPercentile} dinleyici dilimindesin</div>
+        `,
+      },
+      {
+        bg: '#d2e798',
+        fg: '#121212',
+        decor: `
+          <div class="m-wrapped-blob" style="width:240px;height:240px;bottom:-50px;right:-40px;background:#1ed760;opacity:0.55;"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker">DİNLEME EVRİMİN</div>
+          <div class="m-wrapped-hero" style="font-size:36px;">Zirve Yaptığın Aylar</div>
+          <div class="m-wrapped-sub">En yoğun müzik dönemin <strong>${escapeHtml(insights.topMonths[0]?.label || 'Bu Ay')}</strong> oldu.</div>
+          <div class="m-wrapped-hbar-wrap">
+            ${insights.topMonths.map((m, i) => `
+              <div style="animation:wrapSlideUp 0.45s cubic-bezier(0.22,1,0.36,1) ${0.08 * i}s both;">
+                <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:800;">
+                  <span>${escapeHtml(m.label)}</span>
+                  <span>${m.minutes} dk</span>
+                </div>
+                <div class="m-wrapped-hbar-track">
+                  <div class="m-wrapped-hbar-fill" style="width:${Math.max(12, Math.round((m.minutes / maxMonthMin) * 100))}%;background:${i === 0 ? '#121212' : 'rgba(18,18,18,0.52)'};animation-delay:${0.1 * i}s;"></div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `,
+      },
+      {
+        bg: '#7d3cff',
+        fg: '#ffffff',
+        decor: `
+          <div class="m-wrapped-blob" style="width:240px;height:240px;top:-40px;right:-50px;background:#ff4d8d;opacity:0.45;"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker" style="color:#ffe600;">HAFTALIK RİTMİN &amp; SAATİN</div>
+          <div class="m-wrapped-hero" style="font-size:34px;">En Aktif Günün: ${escapeHtml(insights.peakWeekday)}</div>
+          <div class="m-wrapped-days-chart">
+            ${insights.weekdayMinutes.map((mins, idx) => {
+              const isPeak = dayLabels[idx] && insights.peakWeekday.toLowerCase().startsWith(dayLabels[idx].toLowerCase().slice(0, 2));
+              const hPct = Math.max(14, Math.round((mins / maxDayMin) * 100));
+              return `
+                <div class="m-wrapped-day-col">
+                  <div class="m-wrapped-day-bar" style="height:${hPct}%;background:${isPeak ? '#ffe600' : 'rgba(255,255,255,0.45)'};animation-delay:${idx * 0.06}s;"></div>
+                  <div class="m-wrapped-day-lbl" style="color:${isPeak ? '#ffe600' : '#fff'};">${dayLabels[idx]}</div>
+                </div>`;
+            }).join('')}
+          </div>
+          <div class="m-wrapped-pill" style="background:#ffe600;color:#121212;margin-top:8px;"><i class="fa-solid fa-clock"></i> ${escapeHtml(insights.peakHourLabel)} · ${escapeHtml(insights.peakHourMood)}</div>
+        `,
+      },
+      {
+        bg: '#1ed760',
+        fg: '#121212',
+        decor: `
+          <div class="m-wrapped-stripe" style="width:420px;height:48px;top:16%;right:-100px;background:#121212;transform:rotate(-20deg);"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker">#1 NUMARALI ŞARKIN</div>
+          <div class="m-wrapped-sub" style="font-weight:800;">Bir şarkı vardı ki elinden bırakamadın...</div>
+          <div class="m-wrapped-cover-frame"><img src="${escapeHtml(firstThumb)}" alt="" /></div>
+          <div class="m-wrapped-hero" style="font-size:32px;margin:0 0 6px;">${escapeHtml(firstTrack?.title || 'Henüz parça yok')}</div>
+          <div class="m-wrapped-sub" style="font-weight:800;">${escapeHtml(firstTrack?.artist || '')}</div>
+          <div class="m-wrapped-pill" style="background:#121212;color:#1ed760;margin-top:16px;"><i class="fa-solid fa-repeat"></i> Tam ${firstTrack?.playCount || 0} kez baştan sona dinledin</div>
+        `,
+      },
+      {
+        bg: '#ff6b2b',
+        fg: '#121212',
+        decor: `
+          <div class="m-wrapped-blob" style="width:240px;height:240px;bottom:-60px;left:-40px;background:#ffe600;opacity:0.45;"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker">${yearNow} LİSTEN</div>
+          <div class="m-wrapped-hero" style="font-size:34px;margin-bottom:6px;">En Çok Dinlenen 5 Şarkın</div>
+          <div class="m-wrapped-list">
+            ${topTracks.length ? topTracks.map((t, i) => `
+              <div class="m-wrapped-row" style="background:rgba(18,18,18,0.14);animation-delay:${i * 0.08}s;">
+                <div class="m-wrapped-rank">${i + 1}</div>
+                <img class="m-wrapped-mini-art" src="${escapeHtml(thumbUrl(resolveTrackThumbRaw(t), 128))}" alt="" />
+                <div class="m-wrapped-row-meta">
+                  <div class="m-wrapped-row-title">${escapeHtml(t.title)}</div>
+                  <div class="m-wrapped-row-sub">${escapeHtml(t.artist || '')} · ${t.playCount || 0} dinleme</div>
+                </div>
+              </div>
+            `).join('') : '<div class="m-wrapped-sub">Henüz tam dinlenen şarkı yok.</div>'}
+          </div>
+        `,
+      },
+      {
+        bg: '#2d46b9',
+        fg: '#ffffff',
+        decor: `
+          <div class="m-wrapped-blob" style="width:250px;height:250px;top:-40px;right:-60px;background:#ff99e5;opacity:0.42;"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker" style="color:#ff99e5;">FAVORİ SANATÇILARIN</div>
+          <div class="m-wrapped-hero" style="font-size:34px;">${escapeHtml(topArtists[0]?.name || 'Sanatçıların')}</div>
+          <div class="m-wrapped-pill" style="background:#ff99e5;color:#121212;margin-bottom:12px;"><i class="fa-solid fa-crown"></i> En sıkı %${fanPercentile} hayranları arasındasın</div>
+          <div class="m-wrapped-hbar-wrap">
+            ${topArtists.map((a, i) => {
+              const pct = Math.max(8, Math.round((a.count / totalArtistPlays) * 100));
+              return `
+                <div style="animation:wrapSlideUp 0.45s cubic-bezier(0.22,1,0.36,1) ${i * 0.08}s both;">
+                  <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:800;">
+                    <span>${i + 1}. ${escapeHtml(a.name)}</span>
+                    <span>${a.count} çalma (%${pct})</span>
+                  </div>
+                  <div class="m-wrapped-hbar-track" style="background:rgba(255,255,255,0.2);">
+                    <div class="m-wrapped-hbar-fill" style="width:${pct}%;background:${i === 0 ? '#ff99e5' : '#ffffff'};animation-delay:${i * 0.08}s;"></div>
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>
+        `,
+      },
+      {
+        bg: '#121212',
+        fg: '#ffffff',
+        decor: `
+          <div class="m-wrapped-blob" style="width:300px;height:300px;top:12%;left:-70px;background:#7d3cff;opacity:0.52;"></div>
+          <div class="m-wrapped-blob" style="width:280px;height:280px;bottom:8%;right:-60px;background:#1ed760;opacity:0.46;animation-delay:-3s;"></div>
+          <div class="m-wrapped-blob" style="width:220px;height:220px;top:42%;right:15%;background:#ff4d8d;opacity:0.4;animation-delay:-1.5s;"></div>
+        `,
+        html: () => `
+          <div class="m-wrapped-kicker" style="color:#1ed760;">SES AURAN &amp; KİŞİLİĞİN</div>
+          <div class="m-wrapped-hero" style="font-size:40px;margin:10px 0 14px;">${escapeHtml(personaTitle)}</div>
+          <div class="m-wrapped-sub">${escapeHtml(personaDesc)}</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;">
+            <div class="m-wrapped-pill" style="background:rgba(255,255,255,0.14);color:#fff;"><i class="fa-solid fa-fire" style="color:#ff6b2b;"></i> ${streak} Günlük Seri</div>
+            <div class="m-wrapped-pill" style="background:rgba(255,255,255,0.14);color:#fff;"><i class="fa-solid fa-bolt" style="color:#ffe600;"></i> ${totalPlays} Tam Dinleme</div>
+          </div>
+        `,
+      },
+      {
+        bg: '#0b0b12',
+        fg: '#ffffff',
+        decor: `
+          <div class="m-wrapped-blob" style="width:260px;height:260px;top:-40px;left:-40px;background:#1ed760;opacity:0.32;"></div>
+          <div class="m-wrapped-blob" style="width:260px;height:260px;bottom:-40px;right:-40px;background:#7d3cff;opacity:0.35;"></div>
+        `,
+        html: () => {
+          const th = cardThemes[selectedThemeIdx] || cardThemes[0];
+          return `
+            <div class="m-wrapped-master" id="wrappedMasterCard" style="background:${th.bg};color:${th.fg};border:1px solid rgba(255,255,255,0.14);">
+              <div class="m-wrapped-master-top">
+                <img class="m-wrapped-master-art" src="${escapeHtml(firstThumb)}" alt="" />
+                <div style="min-width:0;">
+                  <div style="font-size:11px;font-weight:900;letter-spacing:0.12em;color:${th.accent};">SUNIFY WRAPPED ${yearNow}</div>
+                  <div style="font-size:20px;font-weight:900;line-height:1.1;margin-top:3px;">${escapeHtml(username)}</div>
+                  <div style="font-size:12px;font-weight:700;color:${th.sub};margin-top:3px;">${escapeHtml(personaTitle)}</div>
+                </div>
+              </div>
+              <div class="m-wrapped-master-cols">
+                <div>
+                  <div class="m-wrapped-master-col-h">En İyi Sanatçılar</div>
+                  ${topArtists.slice(0, 5).map((a, i) => `<div class="m-wrapped-master-item">${i + 1} ${escapeHtml(a.name)}</div>`).join('') || '<div class="m-wrapped-master-item">—</div>'}
+                </div>
+                <div>
+                  <div class="m-wrapped-master-col-h">En İyi Şarkılar</div>
+                  ${topTracks.slice(0, 5).map((t, i) => `<div class="m-wrapped-master-item">${i + 1} ${escapeHtml(t.title)}</div>`).join('') || '<div class="m-wrapped-master-item">—</div>'}
+                </div>
+              </div>
+              <div class="m-wrapped-master-stats">
+                <div>
+                  <div class="m-wrapped-master-col-h">Dinlenen Dakika</div>
+                  <div style="font-size:22px;font-weight:900;color:${th.accent};">${totalMinutes.toLocaleString('tr-TR')}</div>
+                </div>
+                <div>
+                  <div class="m-wrapped-master-col-h">Zirve Zaman</div>
+                  <div style="font-size:13px;font-weight:800;">${escapeHtml(insights.peakWeekday)} · ${escapeHtml(insights.peakHourMood)}</div>
+                </div>
+              </div>
+            </div>
+            <div class="m-wrapped-theme-dots" id="wrappedThemeDots">
+              ${cardThemes.map((t, idx) => `<button type="button" class="m-wrapped-theme-dot ${idx === selectedThemeIdx ? 'active' : ''}" data-ti="${idx}" style="background:${t.bg};" aria-label="Tema"></button>`).join('')}
+            </div>
+            <div class="m-wrapped-actions">
+              <button type="button" class="m-wrapped-cta primary" id="wrappedExportVideoBtn"><i class="fa-solid fa-clapperboard"></i> 36 sn Story Videosu Oluştur &amp; Paylaş (.mp4)</button>
+              <button type="button" class="m-wrapped-cta secondary" id="wrappedExportPngBtn"><i class="fa-solid fa-image"></i> Özet Kartını Paylaş (PNG)</button>
+            </div>
+          `;
+        },
+      },
+    ];
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sunifyWrappedStoryOverlay';
+    overlay.className = 'm-wrapped-overlay';
+    overlay.innerHTML = `
+      <div class="m-wrapped-bg-decor" id="wrappedDecor"></div>
+      <div class="m-wrapped-topbar">
+        <div class="m-wrapped-segs" id="wrappedSegs">
+          ${slides.map((_, i) => `<div class="m-wrapped-seg" data-si="${i}"><div class="m-wrapped-seg-fill"></div></div>`).join('')}
+        </div>
+        <div class="m-wrapped-head">
+          <div class="m-wrapped-brand"><span class="m-wrapped-brand-dot"></span> SUNIFY WRAPPED ${yearNow}</div>
+          <div class="m-wrapped-head-btns">
+            <button type="button" class="m-wrapped-icon-btn" id="wrappedMuteBtn" aria-label="Ses"><i class="fa-solid fa-volume-high"></i></button>
+            <button type="button" class="m-wrapped-icon-btn" id="wrappedCloseBtn" aria-label="Kapat"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="m-wrapped-stage" id="wrappedStage"></div>
+    `;
+    document.body.appendChild(overlay);
+
+    let curIdx = 0;
+    let paused = false;
+    let elapsedMs = 0;
+    const SLIDE_MS = 5800;
+    let rafId = null;
+    let lastTick = performance.now();
+    let mutedByWrapped = false;
+
+    const cleanup = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      if (mutedByWrapped) {
+        audio.muted = false;
+        mutedByWrapped = false;
+      }
+      overlay.remove();
+    };
+
+    const renderSlide = (idx) => {
+      curIdx = Math.max(0, Math.min(slides.length - 1, idx));
+      elapsedMs = 0;
+      lastTick = performance.now();
+      const s = slides[curIdx];
+      overlay.style.background = s.bg;
+      overlay.style.color = s.fg;
+      const decorEl = overlay.querySelector('#wrappedDecor');
+      const stageEl = overlay.querySelector('#wrappedStage');
+      if (decorEl) decorEl.innerHTML = s.decor;
+      if (stageEl) stageEl.innerHTML = s.html();
+
+      overlay.querySelectorAll('.m-wrapped-seg').forEach((seg, i) => {
+        seg.classList.toggle('done', i < curIdx);
+        const fill = seg.querySelector('.m-wrapped-seg-fill');
+        if (fill) fill.style.width = i < curIdx ? '100%' : '0%';
+      });
+
+      if (curIdx === slides.length - 1) {
+        paused = true;
+        const lastFill = overlay.querySelector(`.m-wrapped-seg[data-si="${curIdx}"] .m-wrapped-seg-fill`);
+        if (lastFill) lastFill.style.width = '100%';
+
+        overlay.querySelectorAll('#wrappedThemeDots .m-wrapped-theme-dot').forEach((dot) => {
+          dot.onclick = (ev) => {
+            ev.stopPropagation();
+            selectedThemeIdx = Number(dot.dataset.ti) || 0;
+            renderSlide(curIdx);
+          };
+        });
+
+        const vidBtn = overlay.querySelector('#wrappedExportVideoBtn');
+        if (vidBtn) {
+          vidBtn.onclick = async (ev) => {
+            ev.stopPropagation();
+            vidBtn.disabled = true;
+            showStoryProgressOverlay('Sunify Wrapped Videosu');
+            try {
+              const res = await api('/api/story/wrapped-video', {
+                method: 'POST',
+                body: JSON.stringify({
+                  username,
+                  coverRgb: state.currentCoverRgb,
+                  totalMinutes,
+                  totalPlays,
+                  streakDays: streak,
+                  uniqueTracks: insights.uniqueTracks,
+                  uniqueArtists: insights.uniqueArtists,
+                  weekdayMinutes: insights.weekdayMinutes,
+                  peakWeekday: insights.peakWeekday,
+                  topMonths: insights.topMonths,
+                  peakHour: insights.peakHour,
+                  peakHourLabel: insights.peakHourLabel,
+                  peakHourMood: insights.peakHourMood,
+                  topPercentile,
+                  fanPercentile,
+                  personaTitle,
+                  personaDesc,
+                  topTracks,
+                  topArtists,
+                }),
+              });
+              hideStoryProgressOverlay();
+              showToast(`Galeriye kaydedildi: ${res.displayPath}`);
+              if (bridge?.shareFilePath && res.cachePath) {
+                bridge.shareFilePath(res.cachePath, 'video/mp4', 'Sunify Wrapped Videosu');
+              }
+            } catch (err) {
+              hideStoryProgressOverlay();
+              showToast(err.message || 'Özet videosu oluşturulamadı.');
+            } finally {
+              hideStoryProgressOverlay();
+              vidBtn.disabled = false;
+            }
+          };
+        }
+
+        const pngBtn = overlay.querySelector('#wrappedExportPngBtn');
+        if (pngBtn) {
+          pngBtn.onclick = async (ev) => {
+            ev.stopPropagation();
+            showToast('Özet kartı oluşturuluyor...');
+            try {
+              const url = await window.SunifyCards.generateWrappedCardDataUrl({
+                stats: state.listeningStats,
+                username,
+                coverRgb: state.currentCoverRgb,
+                apiBase: API,
+              });
+              window.SunifyCards.shareOrDownloadCard(url, `sunify-wrapped-${Date.now()}.png`, 'Sunify Wrapped');
+            } catch {
+              showToast('Özet kartı oluşturulamadı.');
+            }
+          };
+        }
+      } else {
+        paused = false;
+      }
+    };
+
+    const tick = (now) => {
+      const dt = now - lastTick;
+      lastTick = now;
+      if (!paused && curIdx < slides.length - 1) {
+        elapsedMs += dt;
+        const pct = Math.min(100, (elapsedMs / SLIDE_MS) * 100);
+        const fill = overlay.querySelector(`.m-wrapped-seg[data-si="${curIdx}"] .m-wrapped-seg-fill`);
+        if (fill) fill.style.width = `${pct}%`;
+        if (elapsedMs >= SLIDE_MS) {
+          renderSlide(curIdx + 1);
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    overlay.querySelector('#wrappedCloseBtn').onclick = (ev) => {
+      ev.stopPropagation();
+      cleanup();
+    };
+
+    const muteBtn = overlay.querySelector('#wrappedMuteBtn');
+    muteBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      mutedByWrapped = !mutedByWrapped;
+      audio.muted = mutedByWrapped;
+      muteBtn.innerHTML = `<i class="fa-solid ${mutedByWrapped ? 'fa-volume-xmark' : 'fa-volume-high'}"></i>`;
+    };
+
+    // Tap left/right to navigate slides (ignore clicks on buttons)
+    let pressStart = 0;
+    overlay.addEventListener('pointerdown', (ev) => {
+      if (ev.target.closest('button')) return;
+      pressStart = Date.now();
+      paused = true;
+    });
+    overlay.addEventListener('pointerup', (ev) => {
+      if (ev.target.closest('button')) return;
+      const held = Date.now() - pressStart;
+      if (curIdx < slides.length - 1) paused = false;
+      if (held < 260) {
+        const x = ev.clientX;
+        if (x < window.innerWidth * 0.34) {
+          renderSlide(Math.max(0, curIdx - 1));
+        } else if (curIdx < slides.length - 1) {
+          renderSlide(curIdx + 1);
+        }
+      }
+    });
+
+    // Auto-start #1 track if nothing is playing
+    if (firstTrack && audio.paused) {
+      playTrack(firstTrack, topTracks, 0);
+    }
+
+    renderSlide(0);
+    rafId = requestAnimationFrame(tick);
   }
 
   function openEditPlaylistSheet(ctx) {

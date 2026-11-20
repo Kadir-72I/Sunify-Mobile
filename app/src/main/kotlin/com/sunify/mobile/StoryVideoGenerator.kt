@@ -581,11 +581,14 @@ object StoryVideoGenerator {
         val peakHourLabel = payload.optString("peakHourLabel", "21:00 – 00:00").ifBlank { "21:00 – 00:00" }
         val peakHourMood = payload.optString("peakHourMood", "Gece Kuşu").ifBlank { "Gece Kuşu" }
         val peakHourVal = payload.optInt("peakHour", 22).coerceIn(0, 23)
+        val topPercentile = payload.optInt("topPercentile", if (totalMinutes >= 6000) 3 else if (totalMinutes >= 1500) 10 else 22)
+        val fanPercentile = payload.optString("fanPercentile", "1").ifBlank { "1" }
+        val yearNow = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
 
         val topTracks = mutableListOf<JSONObject>()
         for (i in 0 until min(5, topTracksArr.length())) topTracksArr.optJSONObject(i)?.let { topTracks.add(it) }
         val topArtists = mutableListOf<Pair<String, Int>>()
-        for (i in 0 until min(4, topArtistsArr.length())) {
+        for (i in 0 until min(5, topArtistsArr.length())) {
             val a = topArtistsArr.optJSONObject(i) ?: continue
             topArtists.add(a.optString("name") to a.optInt("count", 0))
         }
@@ -599,435 +602,524 @@ object StoryVideoGenerator {
         updateProgress(6, "Albüm kapakları ve grafikler hazırlanıyor...")
         val firstTrack = topTracks.firstOrNull()
         val topCoverRaw = firstTrack?.optString("thumbnail").orEmpty().let { fetchBitmap(it, 420) }
-        val topCoverRounded = topCoverRaw?.let { bakeRoundedCover(it, 420, 44f) }
+        val topCoverRounded = topCoverRaw?.let { bakeRoundedCover(it, 420, 28f) }
         val miniCovers = topTracks.map { t ->
             fetchBitmap(t.optString("thumbnail"), 120)?.let { raw ->
-                bakeRoundedCover(raw, 84, 18f).also { raw.recycle() }
+                bakeRoundedCover(raw, 84, 14f).also { raw.recycle() }
             }
         }
-        val prebakedBg = bakeBackgroundBitmap(coverRgb, accentRgb2, topCoverRaw, 58)
-        val orb1Bmp = bakeOrbBitmap(Color.argb(140, coverRgb[0], coverRgb[1], coverRgb[2]), 256)
-        val orb2Bmp = bakeOrbBitmap(Color.argb(120, accentRgb2[0], accentRgb2[1], accentRgb2[2]), 256)
-        val logoBmp = bakeSunifyLogoBitmap(coverRgb, accentRgb2, 200)
+        val spGreen = Color.rgb(30, 215, 96)
+        val spBlack = Color.rgb(18, 18, 18)
+        val spPink = Color.rgb(255, 77, 141)
+        val spLime = Color.rgb(210, 231, 152)
+        val spPurple = Color.rgb(125, 60, 255)
+        val spYellow = Color.rgb(255, 230, 0)
+        val spOrange = Color.rgb(255, 107, 43)
+        val spCobalt = Color.rgb(45, 70, 185)
+        val spPastelPink = Color.rgb(255, 153, 229)
+
+        val orbGreen = bakeOrbBitmap(Color.argb(150, 30, 215, 96), 256)
+        val orbPink = bakeOrbBitmap(Color.argb(145, 255, 77, 141), 256)
+        val orbPurple = bakeOrbBitmap(Color.argb(155, 125, 60, 255), 256)
+        val orbYellow = bakeOrbBitmap(Color.argb(130, 255, 230, 0), 256)
+        val logoBmp = bakeSunifyLogoBitmap(intArrayOf(30, 215, 96), intArrayOf(125, 60, 255), 200)
 
         updateProgress(11, "Arka plan müziği bağlanıyor...")
         val (audioEx, tmpAudio) = if (firstTrack != null) {
             openAacExtractor(context, audioService, firstTrack.optString("id"), firstTrack.optString("title"), firstTrack.optString("artist"))
         } else null to null
 
-        val personality = when {
-            peakHourVal >= 22 || peakHourVal <= 4 -> "Gece Melodisi Tutkunu"
-            totalMinutes >= 600 -> "Durdurulamaz Müzik Aşığı"
-            streakDays >= 7 -> "Sadık Ritim Yolcusu"
-            uniqueArtists >= 12 -> "Türler Arası Kaşif"
-            else -> "Sunify Ritim Gezgini"
+        val personality = payload.optString("personaTitle", "").ifBlank {
+            when {
+                peakHourVal >= 22 || peakHourVal <= 4 -> "Gece Melodisi Tutkunu"
+                totalMinutes >= 1200 -> "Durdurulamaz Müzik Aşığı"
+                streakDays >= 7 -> "Sadık Ritim Yolcusu"
+                uniqueArtists >= 12 -> "Türler Arası Kaşif"
+                else -> "Vibe Mimarı"
+            }
         }
 
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
-        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(215, 255, 255, 255); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
-        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
-        val accent2Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(accentRgb2[0], accentRgb2[1], accentRgb2[2]); typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
-        val cardFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val cardStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.2f }
-        val barBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(65, 255, 255, 255) }
-        val barFgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) }
+        val regPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL) }
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f }
         val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         val ringStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
         val tmpRect = RectF()
-        val segTimes = floatArrayOf(0f, 3.6f, 7.6f, 11.6f, 15.8f, 20.0f, 24.4f, 28.4f, 32.0f)
-        val segCount = 8
-        val segBarW = (WIDTH - 56f - (segCount - 1) * 6f) / segCount
-        val footerLogoRect = RectF(50f, HEIGHT - 88f, 92f, HEIGHT - 46f)
+        val segTimes = floatArrayOf(0f, 3.6f, 7.6f, 11.6f, 15.6f, 19.6f, 24.0f, 28.0f, 32.0f, 36.0f)
+        val segCount = 9
+        val segBarW = (WIDTH - 56f - (segCount - 1) * 5f) / segCount
+        val footerLogoRect = RectF(50f, HEIGHT - 84f, 88f, HEIGHT - 46f)
         val dayLabels = arrayOf("Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz")
         val maxDayMin = max(1, weekdayMins.maxOrNull() ?: 1)
         val maxMonthMin = max(1, topMonths.maxOfOrNull { it.second } ?: 1)
         val totalArtistPlays = max(1, topArtists.sumOf { it.second })
 
+        fun drawKineticRibbon(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float, deg: Float, color: Int) {
+            canvas.save()
+            canvas.translate(cx, cy)
+            canvas.rotate(deg)
+            fillPaint.color = color
+            tmpRect.set(-w / 2f, -h / 2f, w / 2f, h / 2f)
+            canvas.drawRoundRect(tmpRect, h / 2f, h / 2f, fillPaint)
+            canvas.restore()
+        }
+
         try {
             return renderAndMuxVideo(
                 context = context,
-                durationSec = 32.0,
+                durationSec = 36.0,
                 audioExtractor = audioEx,
                 audioStartSec = 25.0,
                 fileName = "Sunify-Wrapped-${System.currentTimeMillis()}.mp4"
             ) { canvas, tSec, _ ->
-                canvas.drawBitmap(prebakedBg, 0f, 0f, null)
-
-                val ox1 = WIDTH * 0.20f + cos(tSec * 0.7f) * 95f
-                val oy1 = HEIGHT * 0.22f + sin(tSec * 0.55f) * 80f
-                tmpRect.set(ox1 - 390f, oy1 - 390f, ox1 + 390f, oy1 + 390f)
-                canvas.drawBitmap(orb1Bmp, null, tmpRect, null)
-
-                val ox2 = WIDTH * 0.82f + sin(tSec * 0.65f) * 85f
-                val oy2 = HEIGHT * 0.76f + cos(tSec * 0.8f) * 85f
-                tmpRect.set(ox2 - 370f, oy2 - 370f, ox2 + 370f, oy2 + 370f)
-                canvas.drawBitmap(orb2Bmp, null, tmpRect, null)
-
-                drawParticles(canvas, tSec, dotPaint, coverRgb)
-
-                // Üst 8 sahneli Story ilerleme çubuğu
-                for (s in 0 until segCount) {
-                    val bx = 28f + s * (segBarW + 6f)
-                    tmpRect.set(bx, 38f, bx + segBarW, 44f)
-                    canvas.drawRoundRect(tmpRect, 3f, 3f, barBgPaint)
-                    val sp = ((tSec - segTimes[s]) / (segTimes[s + 1] - segTimes[s])).coerceIn(0f, 1f)
-                    if (sp > 0f) {
-                        tmpRect.set(bx, 38f, bx + segBarW * sp, 44f)
-                        canvas.drawRoundRect(tmpRect, 3f, 3f, barFgPaint)
-                    }
-                }
+                var isLightSlide = false
 
                 when {
-                    // SAHNE 1: SİNEMATİK AÇILIŞ
+                    // SAHNE 1: SPOTIFY WRAPPED INTRO (#121212 + #1ED760 + #FF4D8D)
                     tSec < segTimes[1] -> {
-                        val p = easeOutBack(tSec / 1.0f)
-                        val p2 = easeOutCubic((tSec - 0.3f) / 0.9f)
-                        val pulse = 1f + 0.045f * sin(tSec * 4.2f)
+                        val p = easeOutBack(tSec / 0.9f)
+                        val p2 = easeOutCubic((tSec - 0.2f) / 0.8f)
+                        canvas.drawColor(spBlack)
 
-                        ringStrokePaint.strokeWidth = 3f
-                        ringStrokePaint.color = Color.argb((120 * p2).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        canvas.drawCircle(WIDTH / 2f, 450f, 145f * pulse, ringStrokePaint)
-                        ringStrokePaint.color = Color.argb((70 * p2).toInt(), accentRgb2[0], accentRgb2[1], accentRgb2[2])
-                        canvas.drawCircle(WIDTH / 2f, 450f, 195f * (2f - pulse), ringStrokePaint)
+                        val ox1 = WIDTH * 0.85f + sin(tSec * 1.1f) * 40f
+                        val oy1 = 160f + cos(tSec * 0.9f) * 35f
+                        tmpRect.set(ox1 - 320f, oy1 - 320f, ox1 + 320f, oy1 + 320f)
+                        canvas.drawBitmap(orbGreen, null, tmpRect, null)
 
-                        val r = 104f * p.coerceAtMost(1.06f) * pulse
-                        bmpPaint.alpha = (255 * p.coerceIn(0f, 1f)).toInt()
-                        tmpRect.set(WIDTH / 2f - r, 450f - r, WIDTH / 2f + r, 450f + r)
+                        val ox2 = WIDTH * 0.14f + cos(tSec * 1.0f) * 45f
+                        val oy2 = HEIGHT - 180f + sin(tSec * 0.8f) * 35f
+                        tmpRect.set(ox2 - 310f, oy2 - 310f, ox2 + 310f, oy2 + 310f)
+                        canvas.drawBitmap(orbPink, null, tmpRect, null)
+
+                        drawKineticRibbon(canvas, WIDTH * 0.35f + tSec * 12f, 290f, 640f, 54f, -16f, Color.argb(95, 125, 60, 255))
+                        drawKineticRibbon(canvas, WIDTH * 0.72f - tSec * 10f, 1020f, 520f, 44f, -16f, Color.argb(90, 30, 215, 96))
+
+                        val r = 74f * p.coerceAtMost(1.06f)
+                        tmpRect.set(56f, 360f - r, 56f + r * 2f, 360f + r)
                         canvas.drawBitmap(logoBmp, null, tmpRect, bmpPaint)
-                        bmpPaint.alpha = 255
 
-                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 64f; titlePaint.alpha = (255 * p2).toInt()
-                        canvas.drawText("SUNIFY", WIDTH / 2f, 665f + (1f - p2) * 35f, titlePaint)
-                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 36f; accentPaint.alpha = (255 * p2).toInt()
-                        canvas.drawText("DİNLEME ÖZETİN", WIDTH / 2f, 725f, accentPaint)
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spGreen; boldPaint.textSize = 28f; boldPaint.alpha = (255 * p2).toInt()
+                        canvas.drawText("$yearNow ÖZETİN HAZIR", 56f, 525f, boldPaint)
 
-                        val ba = (255 * easeOutCubic((tSec - 0.8f) / 0.8f)).toInt()
-                        tmpRect.set(140f, 795f, WIDTH - 140f, 875f)
-                        cardFillPaint.color = Color.argb((ba * 0.16f).toInt(), 255, 255, 255)
-                        canvas.drawRoundRect(tmpRect, 40f, 40f, cardFillPaint)
-                        cardStrokePaint.color = Color.argb((ba * 0.45f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        canvas.drawRoundRect(tmpRect, 40f, 40f, cardStrokePaint)
-                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 30f; subPaint.alpha = ba
-                        canvas.drawText(ellipsize(subPaint, username, 390f), WIDTH / 2f, 846f, subPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 104f
+                        canvas.drawText("Sunify", 52f, 645f + (1f - p2) * 36f, boldPaint)
+                        canvas.drawText("Wrapped", 52f, 752f + (1f - p2) * 36f, boldPaint)
+
+                        regPaint.textAlign = Paint.Align.LEFT; regPaint.color = Color.argb((215 * p2).toInt(), 255, 255, 255); regPaint.textSize = 30f
+                        canvas.drawText("Bu yılın ses yolculuğu başlıyor.", 56f, 825f, regPaint)
+
+                        val bp = easeOutBack((tSec - 0.55f) / 0.7f).coerceAtMost(1.05f)
+                        tmpRect.set(56f, 890f, 56f + 390f * bp, 966f)
+                        fillPaint.color = spGreen
+                        canvas.drawRoundRect(tmpRect, 38f, 38f, fillPaint)
+                        boldPaint.color = spBlack; boldPaint.textSize = 29f; boldPaint.alpha = (255 * bp.coerceIn(0f, 1f)).toInt()
+                        canvas.drawText(ellipsize(boldPaint, username, 330f), 88f, 939f, boldPaint)
                     }
 
-                    // SAHNE 2: TOPLAM DİNLEME, SAAT & SERİ
+                    // SAHNE 2: TOPLAM DİNLEME DAKİKASI (#FF4D8D HOT PINK + STARK BLACK)
                     tSec < segTimes[2] -> {
+                        isLightSlide = true
                         val lt = tSec - segTimes[1]
-                        val p = easeOutCubic(lt / 0.75f)
-                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 24f; accentPaint.alpha = (255 * p).toInt()
-                        canvas.drawText("01  •  SENİN RİTMİN", 54f, 150f, accentPaint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 50f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText("Müziğinle Geçen Zaman", 54f, 218f, titlePaint)
+                        val p = easeOutCubic(lt / 0.65f)
+                        val cp = easeOutCubic(lt / 1.4f)
+                        canvas.drawColor(spPink)
 
-                        val cp = easeOutCubic(lt / 1.5f)
-                        val hrs = String.format(java.util.Locale.US, "%.1f saat", (totalMinutes * cp) / 60.0)
-                        val rows = listOf(
-                            Triple("${(totalMinutes * cp).toInt()} dk", "TOPLAM DİNLEME ($hrs)", 295f),
-                            Triple("${(totalPlays * cp).toInt()}", "TAMAMLANAN ŞARKI  •  $uniqueTracks FARKLI PARÇA", 505f),
-                            Triple("${(streakDays * cp).toInt()} gün", "KESİNTİSİZ AKTİF SERİ  •  $uniqueArtists SANATÇI", 715f)
-                        )
-                        rows.forEachIndexed { i, (valStr, lbl, topY) ->
-                            val rp = easeOutCubic((lt - i * 0.22f) / 0.65f)
-                            val sl = (1f - rp) * 85f
-                            tmpRect.set(54f + sl, topY, WIDTH - 54f + sl, topY + 178f)
-                            cardFillPaint.color = Color.argb((rp * 38f).toInt(), 255, 255, 255)
-                            canvas.drawRoundRect(tmpRect, 34f, 34f, cardFillPaint)
-                            cardStrokePaint.color = Color.argb((rp * 120f).toInt(), if (i % 2 == 0) coverRgb[0] else accentRgb2[0], if (i % 2 == 0) coverRgb[1] else accentRgb2[1], if (i % 2 == 0) coverRgb[2] else accentRgb2[2])
-                            canvas.drawRoundRect(tmpRect, 34f, 34f, cardStrokePaint)
+                        tmpRect.set(-160f, -120f, 380f, 420f)
+                        canvas.drawBitmap(orbYellow, null, tmpRect, null)
+                        drawKineticRibbon(canvas, WIDTH * 0.62f, 1080f, 760f, 76f, -14f, Color.argb(45, 18, 18, 18))
 
-                            titlePaint.textSize = 68f; titlePaint.alpha = (255 * rp).toInt()
-                            canvas.drawText(valStr, tmpRect.left + 34f, topY + 94f, titlePaint)
-                            subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 21f; subPaint.alpha = (205 * rp).toInt()
-                            canvas.drawText(lbl, tmpRect.left + 34f, topY + 144f, subPaint)
-                        }
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spBlack; boldPaint.textSize = 26f; boldPaint.alpha = (230 * p).toInt()
+                        canvas.drawText("BU YIL MÜZİĞE DOYDUN", 56f, 195f, boldPaint)
+
+                        val animMins = (totalMinutes * cp).toInt()
+                        boldPaint.textSize = 148f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText(String.format(java.util.Locale.forLanguageTag("tr-TR"), "%,d", animMins), 50f, 390f + (1f - p) * 40f, boldPaint)
+                        boldPaint.textSize = 68f
+                        canvas.drawText("dakika dinledin", 54f, 474f, boldPaint)
+
+                        val hrs = max(1, (totalMinutes / 60))
+                        boldPaint.textSize = 34f; boldPaint.alpha = (225 * p).toInt()
+                        canvas.drawText("Tam $hrs saat kesintisiz müzik.", 56f, 575f, boldPaint)
+                        canvas.drawText("$uniqueTracks farklı parça  •  $uniqueArtists sanatçı", 56f, 628f, boldPaint)
+                        canvas.drawText("$totalPlays tam dinleme  •  $streakDays gün seri", 56f, 681f, boldPaint)
+
+                        val bp = easeOutBack((lt - 0.45f) / 0.7f).coerceAtMost(1.04f)
+                        tmpRect.set(56f, 775f, WIDTH - 56f, 868f)
+                        fillPaint.color = spBlack
+                        canvas.drawRoundRect(tmpRect, 46f, 46f, fillPaint)
+                        boldPaint.textAlign = Paint.Align.CENTER; boldPaint.color = spYellow; boldPaint.textSize = 31f; boldPaint.alpha = (255 * bp.coerceIn(0f, 1f)).toInt()
+                        canvas.drawText("En aktif %$topPercentile dinleyici dilimindesin", WIDTH / 2f, 833f, boldPaint)
                     }
 
-                    // SAHNE 3: HAFTANIN EN YOĞUN GÜNÜ (7 GÜNLÜK ANİMASYONLU BAR GRAFİĞİ)
+                    // SAHNE 3: ZİRVE AYLARIN (#D2E798 ACID LIME + STARK BLACK)
                     tSec < segTimes[3] -> {
+                        isLightSlide = true
                         val lt = tSec - segTimes[2]
-                        val p = easeOutCubic(lt / 0.7f)
-                        accent2Paint.textAlign = Paint.Align.LEFT; accent2Paint.textSize = 24f; accent2Paint.alpha = (255 * p).toInt()
-                        canvas.drawText("02  •  HAFTALIK RİTMİN", 54f, 150f, accent2Paint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 48f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText("En Çok $peakWeekday", 54f, 218f, titlePaint)
-                        titlePaint.textSize = 42f
-                        canvas.drawText("Günleri Dinledin", 54f, 272f, titlePaint)
+                        val p = easeOutCubic(lt / 0.65f)
+                        canvas.drawColor(spLime)
 
-                        // Grafik kartı
-                        tmpRect.set(46f, 340f, WIDTH - 46f, 940f)
-                        cardFillPaint.color = Color.argb((p * 32f).toInt(), 255, 255, 255)
-                        canvas.drawRoundRect(tmpRect, 36f, 36f, cardFillPaint)
-                        cardStrokePaint.color = Color.argb((p * 95f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        canvas.drawRoundRect(tmpRect, 36f, 36f, cardStrokePaint)
+                        tmpRect.set(WIDTH - 340f, HEIGHT - 340f, WIDTH + 120f, HEIGHT + 120f)
+                        canvas.drawBitmap(orbGreen, null, tmpRect, null)
 
-                        val chartLeft = 82f
-                        val chartBottom = 840f
-                        val maxBarH = 380f
-                        val colW = (WIDTH - 164f) / 7f
-                        for (d in 0 until 7) {
-                            val bp = easeOutBack((lt - d * 0.08f) / 0.75f).coerceIn(0f, 1.05f)
-                            val mins = weekdayMins[d]
-                            val isPeak = mins == maxDayMin && mins > 0
-                            val h = max(18f, (mins.toFloat() / maxDayMin.toFloat()) * maxBarH) * bp.coerceAtMost(1f)
-                            val cx = chartLeft + d * colW + colW / 2f
-                            tmpRect.set(cx - 22f, chartBottom - h, cx + 22f, chartBottom)
-                            cardFillPaint.color = if (isPeak) {
-                                Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2])
-                            } else {
-                                Color.argb(120, accentRgb2[0], accentRgb2[1], accentRgb2[2])
-                            }
-                            canvas.drawRoundRect(tmpRect, 14f, 14f, cardFillPaint)
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spBlack; boldPaint.textSize = 26f; boldPaint.alpha = (225 * p).toInt()
+                        canvas.drawText("DİNLEME EVRİMİN", 56f, 185f, boldPaint)
+                        boldPaint.textSize = 68f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText("Zirve Yaptığın", 54f, 268f, boldPaint)
+                        canvas.drawText("Aylar", 54f, 340f, boldPaint)
 
-                            subPaint.textAlign = Paint.Align.CENTER
-                            subPaint.textSize = 22f
-                            subPaint.alpha = if (isPeak) 255 else 185
-                            canvas.drawText(dayLabels[d], cx, chartBottom + 44f, subPaint)
-                            if (mins > 0) {
-                                subPaint.textSize = 18f
-                                canvas.drawText("${mins}d", cx, chartBottom - h - 14f, subPaint)
-                            }
+                        val displayMonths = if (topMonths.isNotEmpty()) topMonths else listOf("Bu Ay" to max(1, totalMinutes))
+                        displayMonths.forEachIndexed { idx, (mLabel, mMins) ->
+                            val mp = easeOutCubic((lt - 0.15f - idx * 0.15f) / 0.7f)
+                            val y = 435f + idx * 145f
+                            boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spBlack; boldPaint.textSize = 34f; boldPaint.alpha = (255 * mp).toInt()
+                            canvas.drawText(mLabel, 56f, y, boldPaint)
+                            boldPaint.textAlign = Paint.Align.RIGHT; boldPaint.textSize = 30f
+                            canvas.drawText("$mMins dk", WIDTH - 56f, y, boldPaint)
+
+                            tmpRect.set(56f, y + 22f, WIDTH - 56f, y + 62f)
+                            fillPaint.color = Color.argb(45, 18, 18, 18)
+                            canvas.drawRoundRect(tmpRect, 20f, 20f, fillPaint)
+
+                            val fillW = max(36f, ((WIDTH - 112f) * (mMins.toFloat() / maxMonthMin.toFloat())) * mp)
+                            tmpRect.set(56f, y + 22f, 56f + fillW, y + 62f)
+                            fillPaint.color = if (idx == 0) spBlack else Color.argb(170, 18, 18, 18)
+                            canvas.drawRoundRect(tmpRect, 20f, 20f, fillPaint)
                         }
-
-                        val hintP = easeOutCubic((lt - 0.8f) / 0.7f)
-                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 26f; subPaint.alpha = (220 * hintP).toInt()
-                        canvas.drawText("Hafta içi ve hafta sonu dinleme dağılımın", WIDTH / 2f, 1020f, subPaint)
                     }
 
-                    // SAHNE 4: EN ÇOK DİNLENEN AYLAR & SAAT DİLİMİ
+                    // SAHNE 4: HAFTALIK RİTİM & SAAT (#7D3CFF ELECTRIC PURPLE + #FFE600 YELLOW)
                     tSec < segTimes[4] -> {
                         val lt = tSec - segTimes[3]
-                        val p = easeOutCubic(lt / 0.7f)
-                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 24f; accentPaint.alpha = (255 * p).toInt()
-                        canvas.drawText("03  •  ZAMAN & AYLAR", 54f, 148f, accentPaint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 46f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText("En Yoğun Saat & Ayların", 54f, 212f, titlePaint)
+                        val p = easeOutCubic(lt / 0.65f)
+                        canvas.drawColor(spPurple)
 
-                        // Üst Saat Kadranı Kartı
-                        tmpRect.set(50f, 265f, WIDTH - 50f, 545f)
-                        cardFillPaint.color = Color.argb((p * 36f).toInt(), 255, 255, 255)
-                        canvas.drawRoundRect(tmpRect, 34f, 34f, cardFillPaint)
-                        cardStrokePaint.color = Color.argb((p * 115f).toInt(), accentRgb2[0], accentRgb2[1], accentRgb2[2])
-                        canvas.drawRoundRect(tmpRect, 34f, 34f, cardStrokePaint)
+                        tmpRect.set(WIDTH - 320f, -120f, WIDTH + 120f, 320f)
+                        canvas.drawBitmap(orbPink, null, tmpRect, null)
 
-                        val clockCx = 165f
-                        val clockCy = 405f
-                        ringStrokePaint.strokeWidth = 10f
-                        ringStrokePaint.color = Color.argb(65, 255, 255, 255)
-                        canvas.drawCircle(clockCx, clockCy, 76f, ringStrokePaint)
-                        val sweep = 110f * easeOutCubic(lt / 1.1f)
-                        val startAngle = ((peakHourVal % 12) * 30f) - 90f
-                        ringStrokePaint.color = Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2])
-                        tmpRect.set(clockCx - 76f, clockCy - 76f, clockCx + 76f, clockCy + 76f)
-                        canvas.drawArc(tmpRect, startAngle, sweep, false, ringStrokePaint)
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spYellow; boldPaint.textSize = 26f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText("HAFTALIK RİTMİN & SAATİN", 54f, 175f, boldPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 60f
+                        canvas.drawText("En Aktif Günün:", 52f, 250f, boldPaint)
+                        boldPaint.color = spYellow; boldPaint.textSize = 72f
+                        canvas.drawText(peakWeekday, 52f, 330f, boldPaint)
 
-                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 32f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText(String.format(java.util.Locale.US, "%02d:00", peakHourVal), clockCx, clockCy + 11f, titlePaint)
+                        // 7 günlük grafik kutusu
+                        tmpRect.set(46f, 385f, WIDTH - 46f, 805f)
+                        fillPaint.color = Color.argb(72, 18, 18, 18)
+                        canvas.drawRoundRect(tmpRect, 34f, 34f, fillPaint)
 
-                        accent2Paint.textAlign = Paint.Align.LEFT; accent2Paint.textSize = 23f; accent2Paint.alpha = (255 * p).toInt()
-                        canvas.drawText("EN AKTİF ZAMANIN", 275f, 355f, accent2Paint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 38f
-                        canvas.drawText(peakHourMood, 275f, 408f, titlePaint)
-                        subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 26f; subPaint.alpha = (210 * p).toInt()
-                        canvas.drawText(peakHourLabel, 275f, 456f, subPaint)
+                        val chartLeft = 78f
+                        val chartBottom = 735f
+                        val maxBarH = 265f
+                        val colW = (WIDTH - 156f) / 7f
+                        for (d in 0 until 7) {
+                            val bp = easeOutBack((lt - d * 0.07f) / 0.65f).coerceIn(0f, 1.04f)
+                            val mins = weekdayMins[d]
+                            val isPeak = mins == maxDayMin && mins > 0
+                            val h = max(20f, (mins.toFloat() / maxDayMin.toFloat()) * maxBarH) * bp.coerceAtMost(1f)
+                            val cx = chartLeft + d * colW + colW / 2f
+                            tmpRect.set(cx - 22f, chartBottom - h, cx + 22f, chartBottom)
+                            fillPaint.color = if (isPeak) spYellow else Color.argb(150, 255, 255, 255)
+                            canvas.drawRoundRect(tmpRect, 14f, 14f, fillPaint)
 
-                        // Alt Aylar Kartı
-                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 23f
-                        canvas.drawText("EN ÇOK DİNLEDİĞİN AYLAR", 54f, 615f, accentPaint)
-
-                        val displayMonths = if (topMonths.isNotEmpty()) topMonths else listOf("Bu Ay" to totalMinutes)
-                        displayMonths.forEachIndexed { idx, (mLabel, mMins) ->
-                            val mp = easeOutCubic((lt - 0.35f - idx * 0.16f) / 0.7f)
-                            val y = 650f + idx * 104f
-                            tmpRect.set(50f, y, WIDTH - 50f, y + 84f)
-                            cardFillPaint.color = Color.argb((mp * 32f).toInt(), 255, 255, 255)
-                            canvas.drawRoundRect(tmpRect, 24f, 24f, cardFillPaint)
-
-                            val fillW = max(24f, ((WIDTH - 136f) * (mMins.toFloat() / maxMonthMin.toFloat())) * mp)
-                            tmpRect.set(68f, y + 54f, 68f + fillW, y + 66f)
-                            cardFillPaint.color = if (idx == 0) Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]) else Color.argb(175, accentRgb2[0], accentRgb2[1], accentRgb2[2])
-                            canvas.drawRoundRect(tmpRect, 6f, 6f, cardFillPaint)
-
-                            titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 26f; titlePaint.alpha = (255 * mp).toInt()
-                            canvas.drawText(mLabel, 68f, y + 39f, titlePaint)
-                            subPaint.textAlign = Paint.Align.RIGHT; subPaint.textSize = 23f; subPaint.alpha = (220 * mp).toInt()
-                            canvas.drawText("$mMins dk", WIDTH - 68f, y + 39f, subPaint)
+                            boldPaint.textAlign = Paint.Align.CENTER; boldPaint.textSize = 22f
+                            boldPaint.color = if (isPeak) spYellow else Color.WHITE
+                            canvas.drawText(dayLabels[d], cx, chartBottom + 40f, boldPaint)
                         }
+
+                        // Saat kadranı kartı
+                        tmpRect.set(46f, 845f, WIDTH - 46f, 1085f)
+                        fillPaint.color = Color.argb(86, 18, 18, 18)
+                        canvas.drawRoundRect(tmpRect, 34f, 34f, fillPaint)
+
+                        val clockCx = 158f; val clockCy = 965f
+                        ringStrokePaint.strokeWidth = 10f; ringStrokePaint.color = Color.argb(75, 255, 255, 255)
+                        canvas.drawCircle(clockCx, clockCy, 66f, ringStrokePaint)
+                        ringStrokePaint.color = spYellow
+                        tmpRect.set(clockCx - 66f, clockCy - 66f, clockCx + 66f, clockCy + 66f)
+                        canvas.drawArc(tmpRect, ((peakHourVal % 12) * 30f) - 90f, 115f * easeOutCubic(lt / 1.0f), false, ringStrokePaint)
+
+                        boldPaint.textAlign = Paint.Align.CENTER; boldPaint.color = Color.WHITE; boldPaint.textSize = 28f
+                        canvas.drawText(String.format(java.util.Locale.US, "%02d:00", peakHourVal), clockCx, clockCy + 10f, boldPaint)
+
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spYellow; boldPaint.textSize = 24f
+                        canvas.drawText("ZİRVE SAAT DİLİMİN", 260f, 922f, boldPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 42f
+                        canvas.drawText(peakHourMood, 260f, 978f, boldPaint)
+                        regPaint.textAlign = Paint.Align.LEFT; regPaint.color = Color.argb(225, 255, 255, 255); regPaint.textSize = 28f
+                        canvas.drawText(peakHourLabel, 260f, 1026f, regPaint)
                     }
 
-                    // SAHNE 5: #1 ZİRVEDEKİ ŞARKI
+                    // SAHNE 5: #1 NUMARALI ŞARKIN (#1ED760 SPOTIFY GREEN + OFFSET BLACK FRAME)
                     tSec < segTimes[5] -> {
+                        isLightSlide = true
                         val lt = tSec - segTimes[4]
-                        val p = easeOutBack(lt / 0.9f)
-                        val pLinear = easeOutCubic(lt / 0.75f)
-                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 24f; accentPaint.alpha = (255 * pLinear).toInt()
-                        canvas.drawText("04  •  ZİRVEDEKİ PARÇAN", WIDTH / 2f, 152f, accentPaint)
-                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 48f; titlePaint.alpha = (255 * pLinear).toInt()
-                        canvas.drawText("1 Numaralı Şarkın", WIDTH / 2f, 218f, titlePaint)
+                        val p = easeOutBack(lt / 0.85f).coerceAtMost(1.04f)
+                        val pLin = easeOutCubic(lt / 0.65f)
+                        canvas.drawColor(spGreen)
 
-                        val pulse = 1f + 0.025f * sin(lt * 3.8f)
-                        val artSize = 410f * (0.76f + 0.24f * p.coerceAtMost(1.05f)) * pulse
+                        drawKineticRibbon(canvas, WIDTH * 0.65f, 220f, 700f, 58f, -18f, Color.argb(38, 18, 18, 18))
+
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spBlack; boldPaint.textSize = 26f; boldPaint.alpha = (230 * pLin).toInt()
+                        canvas.drawText("#1 NUMARALI ŞARKIN", 56f, 180f, boldPaint)
+                        boldPaint.textSize = 44f; boldPaint.alpha = (255 * pLin).toInt()
+                        canvas.drawText("Elinden bırakamadığın parça...", 56f, 240f, boldPaint)
+
+                        val artSize = 400f * (0.78f + 0.22f * p)
                         val artLeft = (WIDTH - artSize) / 2f
-                        val artTop = 285f
-                        tmpRect.set(artLeft - 45f, artTop - 45f, artLeft + artSize + 45f, artTop + artSize + 45f)
-                        canvas.drawBitmap(orb1Bmp, null, tmpRect, null)
+                        val artTop = 305f
+                        // Spotify Wrapped Neo-Brutalist siyah ofset gölge
+                        fillPaint.color = spBlack
+                        tmpRect.set(artLeft + 18f, artTop + 18f, artLeft + artSize + 18f, artTop + artSize + 18f)
+                        canvas.drawRoundRect(tmpRect, 28f, 28f, fillPaint)
 
                         tmpRect.set(artLeft, artTop, artLeft + artSize, artTop + artSize)
                         if (topCoverRounded != null) canvas.drawBitmap(topCoverRounded, null, tmpRect, bmpPaint)
                         else {
-                            cardFillPaint.color = Color.argb(145, coverRgb[0], coverRgb[1], coverRgb[2])
-                            canvas.drawRoundRect(tmpRect, 44f, 44f, cardFillPaint)
+                            fillPaint.color = spPurple
+                            canvas.drawRoundRect(tmpRect, 28f, 28f, fillPaint)
                         }
+                        strokePaint.color = spBlack; strokePaint.strokeWidth = 6f
+                        canvas.drawRoundRect(tmpRect, 28f, 28f, strokePaint)
 
                         val tTitle = firstTrack?.optString("title").orEmpty().ifBlank { "Henüz Veri Yok" }
                         val tArtist = firstTrack?.optString("artist").orEmpty()
                         val tPlays = firstTrack?.optInt("playCount", 0) ?: 0
-                        val tp = easeOutCubic((lt - 0.35f) / 0.7f)
-                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 42f; titlePaint.alpha = (255 * tp).toInt()
-                        canvas.drawText(ellipsize(titlePaint, tTitle, 610f), WIDTH / 2f, 800f, titlePaint)
-                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 29f; subPaint.alpha = (210 * tp).toInt()
-                        canvas.drawText(ellipsize(subPaint, tArtist, 580f), WIDTH / 2f, 852f, subPaint)
+                        val tp = easeOutCubic((lt - 0.3f) / 0.65f)
+                        boldPaint.textAlign = Paint.Align.CENTER; boldPaint.color = spBlack; boldPaint.textSize = 48f; boldPaint.alpha = (255 * tp).toInt()
+                        canvas.drawText(ellipsize(boldPaint, tTitle, 610f), WIDTH / 2f, 815f, boldPaint)
+                        boldPaint.textSize = 32f; boldPaint.alpha = (205 * tp).toInt()
+                        canvas.drawText(ellipsize(boldPaint, tArtist, 580f), WIDTH / 2f, 868f, boldPaint)
 
-                        tmpRect.set(190f, 904f, WIDTH - 190f, 976f)
-                        cardFillPaint.color = Color.argb((tp * 215f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        canvas.drawRoundRect(tmpRect, 36f, 36f, cardFillPaint)
-                        titlePaint.textSize = 27f
-                        canvas.drawText("$tPlays kez baştan sona dinlendi", WIDTH / 2f, 950f, titlePaint)
+                        tmpRect.set(110f, 926f, WIDTH - 110f, 1008f)
+                        fillPaint.color = spBlack
+                        canvas.drawRoundRect(tmpRect, 41f, 41f, fillPaint)
+                        boldPaint.color = spGreen; boldPaint.textSize = 30f; boldPaint.alpha = (255 * tp).toInt()
+                        canvas.drawText("Tam $tPlays kez baştan sona dinledin", WIDTH / 2f, 978f, boldPaint)
                     }
 
-                    // SAHNE 6: TOP 5 PARÇALAR (GERÇEK MİNİ KAPAKLARLA)
+                    // SAHNE 6: EN ÇOK DİNLENEN 5 ŞARKIN (#FF6B2B VIVID ORANGE + STARK BLACK)
                     tSec < segTimes[6] -> {
+                        isLightSlide = true
                         val lt = tSec - segTimes[5]
                         val p = easeOutCubic(lt / 0.65f)
-                        accent2Paint.textAlign = Paint.Align.LEFT; accent2Paint.textSize = 24f; accent2Paint.alpha = (255 * p).toInt()
-                        canvas.drawText("05  •  TOP 5 LİSTEN", 52f, 148f, accent2Paint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 46f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText("Döngüye Aldığın Parçalar", 52f, 212f, titlePaint)
+                        canvas.drawColor(spOrange)
+
+                        tmpRect.set(-140f, HEIGHT - 340f, 340f, HEIGHT + 140f)
+                        canvas.drawBitmap(orbYellow, null, tmpRect, null)
+
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spBlack; boldPaint.textSize = 26f; boldPaint.alpha = (230 * p).toInt()
+                        canvas.drawText("$yearNow LİSTEN", 52f, 168f, boldPaint)
+                        boldPaint.textSize = 56f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText("En Çok Dinlenen 5 Şarkın", 50f, 236f, boldPaint)
 
                         topTracks.forEachIndexed { idx, item ->
-                            val rp = easeOutCubic((lt - idx * 0.14f) / 0.55f)
-                            val y = 266f + idx * 144f
-                            val sl = (1f - rp) * 95f
-                            tmpRect.set(48f + sl, y, WIDTH - 48f + sl, y + 122f)
-                            cardFillPaint.color = Color.argb((rp * 38f).toInt(), 255, 255, 255)
-                            canvas.drawRoundRect(tmpRect, 28f, 28f, cardFillPaint)
-                            if (idx == 0) {
-                                cardStrokePaint.color = Color.argb((rp * 145f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                                canvas.drawRoundRect(tmpRect, 28f, 28f, cardStrokePaint)
-                            }
+                            val rp = easeOutCubic((lt - idx * 0.13f) / 0.55f)
+                            val y = 290f + idx * 150f
+                            val sl = (1f - rp) * 90f
+                            tmpRect.set(46f + sl, y, WIDTH - 46f + sl, y + 128f)
+                            fillPaint.color = Color.argb((rp * 42f).toInt(), 18, 18, 18)
+                            canvas.drawRoundRect(tmpRect, 24f, 24f, fillPaint)
 
-                            accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 34f; accentPaint.alpha = (255 * rp).toInt()
-                            canvas.drawText("${idx + 1}", tmpRect.left + 36f, y + 72f, accentPaint)
+                            boldPaint.textAlign = Paint.Align.CENTER; boldPaint.color = spBlack; boldPaint.textSize = 48f; boldPaint.alpha = (255 * rp).toInt()
+                            canvas.drawText("${idx + 1}", tmpRect.left + 40f, y + 80f, boldPaint)
 
                             val mc = miniCovers.getOrNull(idx)
-                            val cLeft = tmpRect.left + 68f
-                            val cRect = RectF(cLeft, y + 19f, cLeft + 84f, y + 103f)
+                            val cLeft = tmpRect.left + 78f
+                            val cRect = RectF(cLeft, y + 22f, cLeft + 84f, y + 106f)
                             if (mc != null) canvas.drawBitmap(mc, null, cRect, bmpPaint)
                             else {
-                                cardFillPaint.color = Color.argb(120, coverRgb[0], coverRgb[1], coverRgb[2])
-                                canvas.drawRoundRect(cRect, 18f, 18f, cardFillPaint)
+                                fillPaint.color = spBlack
+                                canvas.drawRoundRect(cRect, 14f, 14f, fillPaint)
                             }
 
-                            titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 27f; titlePaint.alpha = (255 * rp).toInt()
-                            canvas.drawText(ellipsize(titlePaint, item.optString("title"), 345f), cLeft + 102f, y + 54f, titlePaint)
-                            subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 21f; subPaint.alpha = (190 * rp).toInt()
-                            canvas.drawText(ellipsize(subPaint, item.optString("artist"), 345f), cLeft + 102f, y + 88f, subPaint)
-                            accent2Paint.textAlign = Paint.Align.RIGHT; accent2Paint.textSize = 24f; accent2Paint.alpha = (240 * rp).toInt()
-                            canvas.drawText("${item.optInt("playCount", 0)}x", tmpRect.right - 24f, y + 70f, accent2Paint)
+                            boldPaint.textAlign = Paint.Align.LEFT; boldPaint.textSize = 29f
+                            canvas.drawText(ellipsize(boldPaint, item.optString("title"), 340f), cLeft + 102f, y + 58f, boldPaint)
+                            regPaint.textAlign = Paint.Align.LEFT; regPaint.color = Color.argb((210 * rp).toInt(), 18, 18, 18); regPaint.textSize = 23f
+                            canvas.drawText(ellipsize(regPaint, "${item.optString("artist")}  •  ${item.optInt("playCount", 0)}x", 360f), cLeft + 102f, y + 94f, regPaint)
                         }
                     }
 
-                    // SAHNE 7: FAVORİ SANATÇILAR
+                    // SAHNE 7: EN ÇOK DİNLENEN 5 SANATÇIN (#2D46B9 ELECTRIC COBALT + #FF99E5 PINK)
                     tSec < segTimes[7] -> {
                         val lt = tSec - segTimes[6]
-                        val p = easeOutCubic(lt / 0.7f)
-                        accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 24f; accentPaint.alpha = (255 * p).toInt()
-                        canvas.drawText("06  •  FAVORİ SANATÇILARIN", 52f, 150f, accentPaint)
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 46f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText("Sana Eşlik Eden İsimler", 52f, 214f, titlePaint)
+                        val p = easeOutCubic(lt / 0.65f)
+                        canvas.drawColor(spCobalt)
+
+                        tmpRect.set(WIDTH - 320f, -120f, WIDTH + 120f, 320f)
+                        canvas.drawBitmap(orbPink, null, tmpRect, null)
+
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spPastelPink; boldPaint.textSize = 26f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText("FAVORİ SANATÇILARIN", 52f, 168f, boldPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 54f
+                        canvas.drawText(ellipsize(boldPaint, topArtists.firstOrNull()?.first ?: "Sanatçıların", 610f), 50f, 236f, boldPaint)
+
+                        tmpRect.set(52f, 266f, 520f, 330f)
+                        fillPaint.color = spPastelPink
+                        canvas.drawRoundRect(tmpRect, 32f, 32f, fillPaint)
+                        boldPaint.color = spBlack; boldPaint.textSize = 25f
+                        canvas.drawText("En sıkı %$fanPercentile hayranları arasındasın", 80f, 307f, boldPaint)
 
                         topArtists.forEachIndexed { idx, (name, cnt) ->
-                            val rp = easeOutCubic((lt - idx * 0.18f) / 0.65f)
-                            val y = 285f + idx * 172f
-                            val sl = (1f - rp) * 80f
-                            tmpRect.set(50f + sl, y, WIDTH - 50f + sl, y + 144f)
-                            cardFillPaint.color = Color.argb((rp * 38f).toInt(), 255, 255, 255)
-                            canvas.drawRoundRect(tmpRect, 30f, 30f, cardFillPaint)
+                            val rp = easeOutCubic((lt - 0.15f - idx * 0.14f) / 0.6f)
+                            val y = 395f + idx * 136f
+                            val pct = ((cnt * 100f) / totalArtistPlays).toInt().coerceIn(8, 100)
 
-                            val pct = ((cnt * 100f) / totalArtistPlays).toInt().coerceIn(5, 100)
-                            val fillW = max(36f, ((WIDTH - 148f) * (pct / 100f)) * rp)
-                            tmpRect.set(74f + sl, y + 104f, 74f + sl + fillW, y + 118f)
-                            cardFillPaint.color = if (idx == 0) Color.rgb(coverRgb[0], coverRgb[1], coverRgb[2]) else Color.argb(190, accentRgb2[0], accentRgb2[1], accentRgb2[2])
-                            canvas.drawRoundRect(tmpRect, 7f, 7f, cardFillPaint)
+                            boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = if (idx == 0) spPastelPink else Color.WHITE; boldPaint.textSize = 32f; boldPaint.alpha = (255 * rp).toInt()
+                            canvas.drawText("${idx + 1}. ${ellipsize(boldPaint, name, 420f)}", 54f, y, boldPaint)
+                            regPaint.textAlign = Paint.Align.RIGHT; regPaint.color = Color.argb((225 * rp).toInt(), 255, 255, 255); regPaint.textSize = 24f
+                            canvas.drawText("$cnt çalma", WIDTH - 54f, y, regPaint)
 
-                            accentPaint.textAlign = Paint.Align.LEFT; accentPaint.textSize = 36f; accentPaint.alpha = (255 * rp).toInt()
-                            canvas.drawText("#${idx + 1}", 74f + sl, y + 66f, accentPaint)
-                            titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 32f; titlePaint.alpha = (255 * rp).toInt()
-                            canvas.drawText(ellipsize(titlePaint, name, 370f), 148f + sl, y + 64f, titlePaint)
-                            subPaint.textAlign = Paint.Align.RIGHT; subPaint.textSize = 24f; subPaint.alpha = (210 * rp).toInt()
-                            canvas.drawText("$cnt dinleme", WIDTH - 74f + sl, y + 64f, subPaint)
+                            tmpRect.set(54f, y + 20f, WIDTH - 54f, y + 48f)
+                            fillPaint.color = Color.argb(55, 255, 255, 255)
+                            canvas.drawRoundRect(tmpRect, 14f, 14f, fillPaint)
+
+                            val fillW = max(32f, ((WIDTH - 108f) * (pct / 100f)) * rp)
+                            tmpRect.set(54f, y + 20f, 54f + fillW, y + 48f)
+                            fillPaint.color = if (idx == 0) spPastelPink else Color.WHITE
+                            canvas.drawRoundRect(tmpRect, 14f, 14f, fillPaint)
                         }
                     }
 
-                    // SAHNE 8: FİNAL PAYLAŞIM KARTI & MÜZİK KİŞİLİĞİN
-                    else -> {
+                    // SAHNE 8: SES AURAN & MÜZİK KİŞİLİĞİN (#121212 + IRIDESCENT AURA)
+                    tSec < segTimes[8] -> {
                         val lt = tSec - segTimes[7]
-                        val p = easeOutCubic(lt / 0.75f)
-                        val r = 64f * p
-                        bmpPaint.alpha = (255 * p).toInt()
-                        tmpRect.set(WIDTH / 2f - r, 210f - r, WIDTH / 2f + r, 210f + r)
-                        canvas.drawBitmap(logoBmp, null, tmpRect, bmpPaint)
-                        bmpPaint.alpha = 255
+                        val p = easeOutCubic(lt / 0.7f)
+                        canvas.drawColor(spBlack)
 
-                        accent2Paint.textAlign = Paint.Align.CENTER; accent2Paint.textSize = 24f; accent2Paint.alpha = (255 * p).toInt()
-                        canvas.drawText("MÜZİK KİŞİLİĞİN", WIDTH / 2f, 326f, accent2Paint)
-                        titlePaint.textAlign = Paint.Align.CENTER; titlePaint.textSize = 48f; titlePaint.alpha = (255 * p).toInt()
-                        canvas.drawText(ellipsize(titlePaint, personality, 620f), WIDTH / 2f, 388f, titlePaint)
+                        val pulse = 1f + 0.08f * sin(lt * 2.5f)
+                        tmpRect.set(WIDTH * 0.18f - 320f * pulse, 280f - 320f * pulse, WIDTH * 0.18f + 320f * pulse, 280f + 320f * pulse)
+                        canvas.drawBitmap(orbPurple, null, tmpRect, null)
+                        tmpRect.set(WIDTH * 0.82f - 300f * pulse, 540f - 300f * pulse, WIDTH * 0.82f + 300f * pulse, 540f + 300f * pulse)
+                        canvas.drawBitmap(orbGreen, null, tmpRect, null)
+                        tmpRect.set(WIDTH * 0.45f - 280f, 840f - 280f, WIDTH * 0.45f + 280f, 840f + 280f)
+                        canvas.drawBitmap(orbPink, null, tmpRect, null)
 
-                        // Final özet cam kartı
-                        tmpRect.set(52f, 440f, WIDTH - 52f, 1080f)
-                        cardFillPaint.color = Color.argb((p * 42f).toInt(), 255, 255, 255)
-                        canvas.drawRoundRect(tmpRect, 38f, 38f, cardFillPaint)
-                        cardStrokePaint.color = Color.argb((p * 140f).toInt(), coverRgb[0], coverRgb[1], coverRgb[2])
-                        canvas.drawRoundRect(tmpRect, 38f, 38f, cardStrokePaint)
+                        boldPaint.textAlign = Paint.Align.CENTER; boldPaint.color = spGreen; boldPaint.textSize = 28f; boldPaint.alpha = (255 * p).toInt()
+                        canvas.drawText("SES AURAN & MÜZİK KİŞİLİĞİN", WIDTH / 2f, 430f, boldPaint)
 
-                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 25f; subPaint.alpha = (235 * p).toInt()
-                        canvas.drawText("$totalMinutes dk  •  $totalPlays çalma  •  $streakDays gün seri", WIDTH / 2f, 506f, subPaint)
-                        accentPaint.textAlign = Paint.Align.CENTER; accentPaint.textSize = 23f; accentPaint.alpha = (240 * p).toInt()
-                        canvas.drawText("En Yoğun: $peakWeekday  •  $peakHourLabel", WIDTH / 2f, 552f, accentPaint)
-
-                        titlePaint.textAlign = Paint.Align.LEFT; titlePaint.textSize = 23f; titlePaint.alpha = (210 * p).toInt()
-                        canvas.drawText("TOP ŞARKILAR", 86f, 622f, titlePaint)
-                        topTracks.take(3).forEachIndexed { idx, t ->
-                            titlePaint.textSize = 28f; titlePaint.alpha = (255 * p).toInt()
-                            canvas.drawText("${idx + 1}. ${ellipsize(titlePaint, t.optString("title"), 510f)}", 86f, 668f + idx * 52f, titlePaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 66f
+                        val words = personality.split(" ")
+                        if (words.size >= 3) {
+                            canvas.drawText(words.take(2).joinToString(" "), WIDTH / 2f, 545f, boldPaint)
+                            canvas.drawText(words.drop(2).joinToString(" "), WIDTH / 2f, 625f, boldPaint)
+                        } else {
+                            canvas.drawText(ellipsize(boldPaint, personality, 620f), WIDTH / 2f, 580f, boldPaint)
                         }
 
-                        titlePaint.textSize = 23f; titlePaint.alpha = (210 * p).toInt()
-                        canvas.drawText("TOP SANATÇILAR", 86f, 862f, titlePaint)
-                        topArtists.take(3).forEachIndexed { idx, (n, _) ->
-                            titlePaint.textSize = 28f; titlePaint.alpha = (255 * p).toInt()
-                            canvas.drawText("${idx + 1}. ${ellipsize(titlePaint, n, 510f)}", 86f, 908f + idx * 52f, titlePaint)
+                        tmpRect.set(80f, 735f, WIDTH - 80f, 825f)
+                        fillPaint.color = Color.argb(46, 255, 255, 255)
+                        canvas.drawRoundRect(tmpRect, 45f, 45f, fillPaint)
+                        boldPaint.color = spYellow; boldPaint.textSize = 30f
+                        canvas.drawText("$streakDays Günlük Seri  •  $totalPlays Tam Dinleme", WIDTH / 2f, 791f, boldPaint)
+                    }
+
+                    // SAHNE 9: ICONIC SPOTIFY WRAPPED MASTER ÖZET KARTI
+                    else -> {
+                        val lt = tSec - segTimes[8]
+                        val p = easeOutBack(lt / 0.75f).coerceAtMost(1.03f)
+                        canvas.drawColor(Color.rgb(10, 10, 16))
+
+                        tmpRect.set(-140f, -140f, 420f, 420f)
+                        canvas.drawBitmap(orbGreen, null, tmpRect, null)
+                        tmpRect.set(WIDTH - 420f, HEIGHT - 420f, WIDTH + 140f, HEIGHT + 140f)
+                        canvas.drawBitmap(orbPurple, null, tmpRect, null)
+
+                        // Master Poster Kartı
+                        tmpRect.set(48f, 130f, WIDTH - 48f, 1110f)
+                        fillPaint.color = spBlack
+                        canvas.drawRoundRect(tmpRect, 40f, 40f, fillPaint)
+                        strokePaint.color = spGreen; strokePaint.strokeWidth = 3.5f
+                        canvas.drawRoundRect(tmpRect, 40f, 40f, strokePaint)
+
+                        // Üst Kapak + Başlık
+                        val artRect = RectF(84f, 174f, 254f, 344f)
+                        if (topCoverRounded != null) canvas.drawBitmap(topCoverRounded, null, artRect, bmpPaint)
+                        else {
+                            fillPaint.color = spGreen
+                            canvas.drawRoundRect(artRect, 22f, 22f, fillPaint)
                         }
 
-                        subPaint.textAlign = Paint.Align.CENTER; subPaint.textSize = 22f; subPaint.alpha = (180 * p).toInt()
-                        canvas.drawText("Sunify ile oluşturuldu  •  $username", WIDTH / 2f, 1142f, subPaint)
+                        boldPaint.textAlign = Paint.Align.LEFT; boldPaint.color = spGreen; boldPaint.textSize = 23f; boldPaint.alpha = (255 * p.coerceIn(0f, 1f)).toInt()
+                        canvas.drawText("SUNIFY WRAPPED $yearNow", 282f, 222f, boldPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 40f
+                        canvas.drawText(ellipsize(boldPaint, username, 345f), 282f, 276f, boldPaint)
+                        regPaint.textAlign = Paint.Align.LEFT; regPaint.color = Color.argb(200, 255, 255, 255); regPaint.textSize = 24f
+                        canvas.drawText(ellipsize(regPaint, personality, 345f), 282f, 318f, regPaint)
+
+                        // 2 Sütunlu Top Sanatçılar & Top Şarkılar
+                        boldPaint.color = spGreen; boldPaint.textSize = 22f
+                        canvas.drawText("EN İYİ SANATÇILAR", 84f, 426f, boldPaint)
+                        canvas.drawText("EN İYİ ŞARKILAR", 380f, 426f, boldPaint)
+
+                        topArtists.take(5).forEachIndexed { idx, (name, _) ->
+                            boldPaint.color = Color.WHITE; boldPaint.textSize = 26f
+                            canvas.drawText("${idx + 1} ${ellipsize(boldPaint, name, 255f)}", 84f, 476f + idx * 54f, boldPaint)
+                        }
+                        topTracks.take(5).forEachIndexed { idx, t ->
+                            boldPaint.color = Color.WHITE; boldPaint.textSize = 26f
+                            canvas.drawText("${idx + 1} ${ellipsize(boldPaint, t.optString("title"), 255f)}", 380f, 476f + idx * 54f, boldPaint)
+                        }
+
+                        // Ayırıcı çizgi
+                        fillPaint.color = Color.argb(45, 255, 255, 255)
+                        canvas.drawRect(84f, 775f, WIDTH - 84f, 778f, fillPaint)
+
+                        // Alt 2'li İstatistikler
+                        boldPaint.color = Color.argb(175, 255, 255, 255); boldPaint.textSize = 21f
+                        canvas.drawText("DİNLENEN DAKİKA", 84f, 834f, boldPaint)
+                        canvas.drawText("ZİRVE ZAMAN", 380f, 834f, boldPaint)
+
+                        boldPaint.color = spGreen; boldPaint.textSize = 54f
+                        canvas.drawText(String.format(java.util.Locale.forLanguageTag("tr-TR"), "%,d", totalMinutes), 84f, 902f, boldPaint)
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 30f
+                        canvas.drawText(peakWeekday, 380f, 882f, boldPaint)
+                        regPaint.color = spYellow; regPaint.textSize = 25f
+                        canvas.drawText(peakHourMood, 380f, 922f, regPaint)
+
+                        boldPaint.color = Color.argb(175, 255, 255, 255); boldPaint.textSize = 21f
+                        canvas.drawText("EN AKTİF AY", 84f, 984f, boldPaint)
+                        canvas.drawText("DİNLEME SERİSİ", 380f, 984f, boldPaint)
+
+                        boldPaint.color = Color.WHITE; boldPaint.textSize = 30f
+                        canvas.drawText(topMonths.firstOrNull()?.first ?: "$yearNow", 84f, 1028f, boldPaint)
+                        canvas.drawText("$streakDays gün  •  %$topPercentile", 380f, 1028f, boldPaint)
                     }
                 }
 
+                // Üst 9 sahneli Spotify Wrapped Story ilerleme çubuğu
+                val barBgCol = if (isLightSlide) Color.argb(55, 18, 18, 18) else Color.argb(75, 255, 255, 255)
+                val barFgCol = if (isLightSlide) spBlack else Color.WHITE
+                for (s in 0 until segCount) {
+                    val bx = 28f + s * (segBarW + 5f)
+                    tmpRect.set(bx, 38f, bx + segBarW, 44f)
+                    fillPaint.color = barBgCol
+                    canvas.drawRoundRect(tmpRect, 3f, 3f, fillPaint)
+                    val sp = ((tSec - segTimes[s]) / (segTimes[s + 1] - segTimes[s])).coerceIn(0f, 1f)
+                    if (sp > 0f) {
+                        tmpRect.set(bx, 38f, bx + segBarW * sp, 44f)
+                        fillPaint.color = barFgCol
+                        canvas.drawRoundRect(tmpRect, 3f, 3f, fillPaint)
+                    }
+                }
+
+                // Alt Sunify Wrapped watermark
                 canvas.drawBitmap(logoBmp, null, footerLogoRect, bmpPaint)
-                subPaint.textAlign = Paint.Align.LEFT; subPaint.textSize = 22f; subPaint.alpha = 220
-                canvas.drawText("Sunify Wrapped", 104f, HEIGHT - 59f, subPaint)
+                boldPaint.textAlign = Paint.Align.LEFT; boldPaint.textSize = 23f
+                boldPaint.color = if (isLightSlide) spBlack else Color.WHITE
+                boldPaint.alpha = 225
+                canvas.drawText("SUNIFY WRAPPED $yearNow", 102f, HEIGHT - 57f, boldPaint)
             }
         } finally {
             isGenerating = false
             topCoverRaw?.recycle()
             topCoverRounded?.recycle()
             miniCovers.forEach { it?.recycle() }
-            prebakedBg.recycle()
-            orb1Bmp.recycle()
-            orb2Bmp.recycle()
+            orbGreen.recycle()
+            orbPink.recycle()
+            orbPurple.recycle()
+            orbYellow.recycle()
             logoBmp.recycle()
             runCatching { audioEx?.release() }
             runCatching { tmpAudio?.delete() }
