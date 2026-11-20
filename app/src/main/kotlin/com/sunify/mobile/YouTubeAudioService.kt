@@ -1,6 +1,12 @@
 package com.sunify.mobile
 
+import android.content.ContentValues
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -55,15 +61,27 @@ class YouTubeAudioService(private val context: Context) {
         val expiresAt: Long
     )
 
+    data class SavedTrackResult(
+        val fileName: String,
+        val displayPath: String,
+        val uriString: String,
+        val sizeBytes: Long,
+        val mimeType: String
+    )
+
     private val searchCache = ConcurrentHashMap<String, Pair<Long, List<TrackItem>>>()
     private val streamCache = ConcurrentHashMap<String, CachedStream>()
     private val queryToVideoId = ConcurrentHashMap<String, String>()
+    private val downloadsIndexLock = Any()
 
     val cacheDir: File by lazy {
         File(context.cacheDir, "SunifyAudioCache").apply { mkdirs() }
     }
     val downloadsDir: File by lazy {
         File(context.filesDir, "downloads").apply { mkdirs() }
+    }
+    private val downloadsIndexFile: File by lazy {
+        File(context.filesDir, "downloads_index.json")
     }
 
     @Volatile
@@ -605,18 +623,347 @@ class YouTubeAudioService(private val context: Context) {
         return File(cacheDir, "$hash.m4a")
     }
 
-    fun saveTrackLocally(id: String, title: String, artist: String, query: String): File {
-        val safeName = "${artist}_${title}".replace(Regex("[^a-zA-Z0-9._ -]"), "_").take(80)
-        val outFile = File(downloadsDir, "$safeName.m4a")
-        if (outFile.exists() && outFile.length() > 16 * 1024) return outFile
-        val stream = resolveAudioStream(id.ifEmpty { query }, title, artist)
-        val req = Request.Builder().url(stream.url).build()
-        OkHttpDownloader.sharedClient.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("İndirme başarısız (${res.code})")
-            res.body?.byteStream()?.use { input ->
-                outFile.outputStream().use { output -> input.copyTo(output) }
+    private fun sanitizeDownloadSegment(raw: String, fallback: String): String {
+        val cleaned = raw
+            .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trim('.')
+        return cleaned.ifEmpty { fallback }.take(56).trim()
+    }
+
+    private fun buildDownloadFileName(artist: String, title: String): String {
+        val safeArtist = sanitizeDownloadSegment(artist, "")
+        val safeTitle = sanitizeDownloadSegment(title, "Sunify Şarkı")
+        val combined = if (safeArtist.isNotEmpty()) "$safeArtist - $safeTitle" else safeTitle
+        return "${combined.take(120).trim()}.mp3"
+    }
+
+    private fun fetchCoverBytesBestEffort(url: String): ByteArray? {
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+            return null
+        }
+        return runCatching {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
+                .build()
+            OkHttpDownloader.sharedClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return null
+                val bytes = res.body?.bytes() ?: return null
+                if (bytes.size in 100..(350 * 1024)) bytes else null
+            }
+        }.getOrNull()
+    }
+
+    private fun readDownloadsIndex(): MutableList<JSONObject> {
+        synchronized(downloadsIndexLock) {
+            if (!downloadsIndexFile.exists()) return mutableListOf()
+            val arr = runCatching { JSONArray(downloadsIndexFile.readText(Charsets.UTF_8)) }.getOrNull() ?: return mutableListOf()
+            val list = mutableListOf<JSONObject>()
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { list.add(it) }
+            }
+            return list
+        }
+    }
+
+    private fun writeDownloadsIndex(entries: List<JSONObject>) {
+        synchronized(downloadsIndexLock) {
+            val arr = JSONArray()
+            entries.forEach { arr.put(it) }
+            runCatching { downloadsIndexFile.writeText(arr.toString(), Charsets.UTF_8) }
+        }
+    }
+
+    private fun isUriReadable(uriString: String): Boolean {
+        if (!uriString.startsWith("content://")) return File(uriString).let { it.exists() && it.length() > 1024L }
+        return runCatching {
+            context.contentResolver.openFileDescriptor(Uri.parse(uriString), "r")?.use { pfd ->
+                pfd.statSize != 0L
+            } ?: false
+        }.getOrDefault(false)
+    }
+
+    private fun publicSunifyDir(): File = File(
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+        "Sunify"
+    )
+
+    fun resolveDownloadFileOrUri(uriParam: String, nameParam: String): Pair<Uri?, File?> {
+        if (uriParam.startsWith("content://")) {
+            return Uri.parse(uriParam) to null
+        }
+        val cleanName = File(nameParam).name
+        if (cleanName.isNotEmpty()) {
+            val pubFile = File(publicSunifyDir(), cleanName)
+            if (pubFile.exists() && pubFile.isFile) return null to pubFile
+            val privFile = File(downloadsDir, cleanName)
+            if (privFile.exists() && privFile.isFile) return null to privFile
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val foundUri = queryMediaStoreDownloadByName(cleanName)
+                if (foundUri != null) return foundUri to null
             }
         }
-        return outFile
+        return null to null
+    }
+
+    private fun queryMediaStoreDownloadByName(fileName: String): Uri? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        val args = arrayOf(fileName, "%Sunify%")
+        return runCatching {
+            context.contentResolver.query(collection, projection, selection, args, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(0)
+                    Uri.withAppendedPath(collection, id.toString())
+                } else null
+            }
+        }.getOrNull()
+    }
+
+    fun saveTrackLocally(
+        id: String,
+        title: String,
+        artist: String,
+        query: String,
+        thumbnail: String = ""
+    ): SavedTrackResult {
+        val cleanTitle = title.trim().ifEmpty { query.trim().ifEmpty { "Sunify Şarkı" } }
+        val cleanArtist = artist.trim()
+        val fileName = buildDownloadFileName(cleanArtist, cleanTitle)
+        val ts = System.currentTimeMillis()
+        val tmpSrc = File(cacheDir, "tmp_src_$ts.m4a")
+        val tmpMp3 = File(cacheDir, "tmp_out_$ts.mp3")
+
+        try {
+            val stream = resolveAudioStream(id.ifEmpty { query }, cleanTitle, cleanArtist)
+            val req = Request.Builder()
+                .url(stream.url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
+                .build()
+            OkHttpDownloader.streamClient.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) throw IllegalStateException("İndirme başarısız (${res.code})")
+                val input = res.body?.byteStream() ?: throw IllegalStateException("Boş ses akışı")
+                input.use { srcStream ->
+                    tmpSrc.outputStream().buffered(65536).use { out ->
+                        srcStream.copyTo(out, 65536)
+                    }
+                }
+            }
+
+            if (!tmpSrc.exists() || tmpSrc.length() < 4096L) {
+                throw IllegalStateException("Ses dosyası indirilemedi.")
+            }
+
+            val coverBytes = fetchCoverBytesBestEffort(thumbnail)
+            Mp3Converter.convertToMp3(tmpSrc, tmpMp3, cleanTitle, cleanArtist, coverBytes)
+            val sizeBytes = tmpMp3.length()
+
+            var savedUriString = ""
+            var displayPath = "İndirilenler/Sunify/$fileName"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                runCatching {
+                    resolver.delete(
+                        collection,
+                        "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+                        arrayOf(fileName, "%Sunify%")
+                    )
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "audio/mpeg")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Sunify")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val itemUri = resolver.insert(collection, values)
+                if (itemUri != null) {
+                    var copyOk = false
+                    try {
+                        resolver.openOutputStream(itemUri)?.use { os ->
+                            tmpMp3.inputStream().buffered(65536).use { ins ->
+                                ins.copyTo(os, 65536)
+                            }
+                            os.flush()
+                        } ?: throw IllegalStateException("MediaStore çıkış akışı açılamadı.")
+                        values.clear()
+                        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        resolver.update(itemUri, values, null, null)
+                        savedUriString = itemUri.toString()
+                        copyOk = true
+                    } finally {
+                        if (!copyOk) runCatching { resolver.delete(itemUri, null, null) }
+                    }
+                }
+            }
+
+            if (savedUriString.isEmpty()) {
+                val targetPublicDir = publicSunifyDir()
+                val destFile = runCatching {
+                    if (!targetPublicDir.exists()) targetPublicDir.mkdirs()
+                    val candidate = File(targetPublicDir, fileName)
+                    tmpMp3.copyTo(candidate, overwrite = true)
+                    MediaScannerConnection.scanFile(context, arrayOf(candidate.absolutePath), arrayOf("audio/mpeg"), null)
+                    candidate
+                }.getOrElse {
+                    displayPath = fileName
+                    val privFile = File(downloadsDir, fileName)
+                    tmpMp3.copyTo(privFile, overwrite = true)
+                    privFile
+                }
+                savedUriString = destFile.absolutePath
+            }
+
+            val existing = readDownloadsIndex()
+                .filter { it.optString("fileName") != fileName }
+                .toMutableList()
+            existing.add(0, JSONObject().apply {
+                put("id", id)
+                put("title", cleanTitle)
+                put("artist", cleanArtist.ifEmpty { "Yerel" })
+                put("thumbnail", thumbnail)
+                put("fileName", fileName)
+                put("uri", savedUriString)
+                put("size", sizeBytes)
+                put("format", "mp3")
+                put("savedAt", System.currentTimeMillis())
+            })
+            writeDownloadsIndex(existing)
+
+            return SavedTrackResult(
+                fileName = fileName,
+                displayPath = displayPath,
+                uriString = savedUriString,
+                sizeBytes = sizeBytes,
+                mimeType = "audio/mpeg"
+            )
+        } finally {
+            runCatching { if (tmpSrc.exists()) tmpSrc.delete() }
+            runCatching { if (tmpMp3.exists()) tmpMp3.delete() }
+        }
+    }
+
+    fun listDownloadedTracks(): JSONArray {
+        val result = JSONArray()
+        val seenNames = HashSet<String>()
+        val validIndex = mutableListOf<JSONObject>()
+
+        readDownloadsIndex().forEach { entry ->
+            val fileName = entry.optString("fileName")
+            val uriStr = entry.optString("uri")
+            if (fileName.isBlank() || uriStr.isBlank()) return@forEach
+            if (!isUriReadable(uriStr)) return@forEach
+            validIndex.add(entry)
+            if (seenNames.add(fileName.lowercase(Locale.ROOT))) {
+                val localUrl = if (uriStr.startsWith("content://")) {
+                    "/api/library/file?uri=${URLEncoder.encode(uriStr, "UTF-8")}&name=${URLEncoder.encode(fileName, "UTF-8")}"
+                } else {
+                    "/api/library/file?name=${URLEncoder.encode(fileName, "UTF-8")}"
+                }
+                result.put(JSONObject().apply {
+                    put("id", entry.optString("id"))
+                    put("title", entry.optString("title"))
+                    put("artist", entry.optString("artist").ifEmpty { "Yerel" })
+                    put("thumbnail", entry.optString("thumbnail"))
+                    put("isLocal", true)
+                    put("size", entry.optLong("size", 0L))
+                    put("format", entry.optString("format", "mp3"))
+                    put("fileName", fileName)
+                    put("localUrl", localUrl)
+                })
+            }
+        }
+        writeDownloadsIndex(validIndex)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                val proj = arrayOf(
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.SIZE
+                )
+                context.contentResolver.query(
+                    collection,
+                    proj,
+                    "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",
+                    arrayOf("%Sunify%", "%.mp3"),
+                    "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        val rowId = c.getLong(0)
+                        val fname = c.getString(1).orEmpty()
+                        val sz = c.getLong(2)
+                        if (fname.isNotEmpty() && seenNames.add(fname.lowercase(Locale.ROOT))) {
+                            val base = fname.substringBeforeLast(".")
+                            val parts = base.split(" - ", limit = 2)
+                            val art = if (parts.size == 2) parts[0].trim() else "Yerel"
+                            val ttl = if (parts.size == 2) parts[1].trim() else base
+                            val uriStr = Uri.withAppendedPath(collection, rowId.toString()).toString()
+                            result.put(JSONObject().apply {
+                                put("title", ttl)
+                                put("artist", art)
+                                put("isLocal", true)
+                                put("size", sz)
+                                put("format", "mp3")
+                                put("fileName", fname)
+                                put("localUrl", "/api/library/file?uri=${URLEncoder.encode(uriStr, "UTF-8")}&name=${URLEncoder.encode(fname, "UTF-8")}")
+                            })
+                        }
+                    }
+                }
+            }
+        } else {
+            publicSunifyDir().listFiles()?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }?.forEach { f ->
+                if (seenNames.add(f.name.lowercase(Locale.ROOT))) {
+                    val base = f.nameWithoutExtension
+                    val parts = base.split(" - ", limit = 2)
+                    result.put(JSONObject().apply {
+                        put("title", if (parts.size == 2) parts[1].trim() else base)
+                        put("artist", if (parts.size == 2) parts[0].trim() else "Yerel")
+                        put("isLocal", true)
+                        put("size", f.length())
+                        put("format", "mp3")
+                        put("fileName", f.name)
+                        put("localUrl", "/api/library/file?name=${URLEncoder.encode(f.name, "UTF-8")}")
+                    })
+                }
+            }
+        }
+
+        downloadsDir.listFiles()?.filter { it.isFile }?.forEach { file ->
+            if (seenNames.add(file.name.lowercase(Locale.ROOT))) {
+                val base = file.nameWithoutExtension
+                val sep = if (base.contains(" - ")) " - " else "_"
+                val parts = base.split(sep, limit = 2)
+                val artistName = parts.getOrNull(0).orEmpty().ifEmpty { "Yerel" }
+                val titleName = parts.getOrNull(1).orEmpty().ifEmpty { base }
+                result.put(JSONObject().apply {
+                    put("title", titleName)
+                    put("artist", artistName)
+                    put("isLocal", true)
+                    put("size", file.length())
+                    put("format", file.extension.lowercase(Locale.ROOT).ifEmpty { "m4a" })
+                    put("fileName", file.name)
+                    put("localUrl", "/api/library/file?name=${URLEncoder.encode(file.name, "UTF-8")}")
+                })
+            }
+        }
+        return result
+    }
+
+    fun getTotalDownloadsBytes(): Long {
+        val tracks = listDownloadedTracks()
+        var total = 0L
+        for (i in 0 until tracks.length()) {
+            total += tracks.optJSONObject(i)?.optLong("size", 0L) ?: 0L
+        }
+        return total
     }
 }

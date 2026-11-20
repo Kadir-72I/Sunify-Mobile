@@ -1,5 +1,7 @@
 /* sunify-audio-fx.js — Ortak 10 bant EQ, reverb, normalizasyon, crossfade, uyku zamanlayıcısı ve canlı görselleştirici */
 (function initSunifyAudioFXModule(global) {
+  const isMobileEnv = Boolean(global.SunifyAndroidBridge)
+    || /Android|Mobile/i.test((global.navigator && global.navigator.userAgent) || '');
   const EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
   const EQ_LABELS = ['32Hz', '64Hz', '125Hz', '250Hz', '500Hz', '1kHz', '2kHz', '4kHz', '8kHz', '16kHz'];
   const EQ_PRESETS = {
@@ -49,7 +51,14 @@
   let masterGain = null;
   let analyser = null;
   let freqData = null;
+  let timeData = null;
   let initFailed = false;
+  let convolverConnected = false;
+  let convolverBufferReady = false;
+  let nativeFadeTimer = null;
+  let lastVisDrawMs = 0;
+  let cachedThemeRgb = '181, 122, 255';
+  let cachedThemeAt = 0;
 
   const state = {
     eqBands: loadInitialEqBands(),
@@ -63,6 +72,11 @@
     sleepRemainingSec: 0,
   };
 
+  function hasActiveDsp() {
+    if (state.reverb > 0.005 || state.normalization) return true;
+    return state.eqBands.some((g) => Math.abs(Number(g) || 0) > 0.05);
+  }
+
   let crossfadeTriggeredKey = '';
   let prewarmedKey = '';
   let sleepInterval = null;
@@ -73,7 +87,7 @@
   let visRafId = 0;
   let visPhase = 0;
 
-  function createImpulseResponse(ctx, durationSec = 2.2, decay = 2.8) {
+  function createImpulseResponse(ctx, durationSec = 2.0, decay = 2.8) {
     const rate = ctx.sampleRate || 44100;
     const length = Math.floor(rate * durationSec);
     const impulse = ctx.createBuffer(2, length, rate);
@@ -106,6 +120,31 @@
     if (!dryGain || !wetGain || !audioCtx) return;
     const now = audioCtx.currentTime;
     const r = clamp(state.reverb, 0, 1);
+    if (r <= 0.005) {
+      dryGain.gain.setTargetAtTime(1, now, 0.04);
+      wetGain.gain.setTargetAtTime(0, now, 0.04);
+      if (convolverConnected && compressor && convolver) {
+        try {
+          compressor.disconnect(convolver);
+          convolver.disconnect(wetGain);
+        } catch {}
+        convolverConnected = false;
+      }
+      return;
+    }
+
+    if (!convolver) convolver = audioCtx.createConvolver();
+    if (!convolverBufferReady) {
+      convolver.buffer = createImpulseResponse(audioCtx, isMobileEnv ? 1.1 : 2.0, 2.8);
+      convolverBufferReady = true;
+    }
+    if (!convolverConnected && compressor) {
+      try {
+        compressor.connect(convolver);
+        convolver.connect(wetGain);
+        convolverConnected = true;
+      } catch {}
+    }
     dryGain.gain.setTargetAtTime(1 - r * 0.42, now, 0.04);
     wetGain.gain.setTargetAtTime(r * 0.72, now, 0.04);
   }
@@ -119,7 +158,11 @@
       return false;
     }
     try {
-      audioCtx = new Ctx();
+      try {
+        audioCtx = new Ctx({ latencyHint: 'playback' });
+      } catch {
+        audioCtx = new Ctx();
+      }
       mediaSource = audioCtx.createMediaElementSource(audioEl);
       filters = EQ_FREQUENCIES.map((freq, index) => {
         const f = audioCtx.createBiquadFilter();
@@ -134,10 +177,6 @@
 
       dryGain = audioCtx.createGain();
       wetGain = audioCtx.createGain();
-      convolver = audioCtx.createConvolver();
-      convolver.buffer = createImpulseResponse(audioCtx, 2.2, 2.8);
-      applyReverbMix();
-
       masterGain = audioCtx.createGain();
       masterGain.gain.value = 1;
 
@@ -152,12 +191,11 @@
       }
       filters[filters.length - 1].connect(compressor);
       compressor.connect(dryGain);
-      compressor.connect(convolver);
-      convolver.connect(wetGain);
       dryGain.connect(masterGain);
       wetGain.connect(masterGain);
       masterGain.connect(analyser);
       analyser.connect(audioCtx.destination);
+      applyReverbMix();
 
       const savedOutput = localStorage.getItem('sunify_audio_output_id') || 'default';
       if (savedOutput !== 'default' && typeof audioCtx.setSinkId === 'function') {
@@ -172,8 +210,21 @@
     }
   }
 
+  function initIfNeeded(element) {
+    if (element) audioEl = element;
+    reapplyToAudio();
+    if (!audioEl) return false;
+    if (mediaSource) return true;
+    if (!isMobileEnv || hasActiveDsp()) {
+      return init(audioEl);
+    }
+    return false;
+  }
+
   async function resume() {
-    if (audioEl && !mediaSource) init(audioEl);
+    if (audioEl && !mediaSource && (!isMobileEnv || hasActiveDsp())) {
+      init(audioEl);
+    }
     if (audioCtx && audioCtx.state === 'suspended') {
       try {
         await audioCtx.resume();
@@ -206,6 +257,10 @@
     try {
       localStorage.setItem('sunify_fx_eq_10', JSON.stringify(state.eqBands));
     } catch {}
+    if (audioEl && !mediaSource && hasActiveDsp()) {
+      init(audioEl);
+      resume();
+    }
     if (filters.length && audioCtx) {
       const now = audioCtx.currentTime;
       filters.forEach((f, idx) => f.gain.setTargetAtTime(state.eqBands[idx] || 0, now, 0.035));
@@ -230,6 +285,10 @@
     try {
       localStorage.setItem('sunify_fx_reverb', String(state.reverb));
     } catch {}
+    if (audioEl && !mediaSource && hasActiveDsp()) {
+      init(audioEl);
+      resume();
+    }
     applyReverbMix();
   }
 
@@ -238,6 +297,10 @@
     try {
       localStorage.setItem('sunify_fx_norm', String(state.normalization));
     } catch {}
+    if (audioEl && !mediaSource && hasActiveDsp()) {
+      init(audioEl);
+      resume();
+    }
     applyCompressorSettings();
   }
 
@@ -280,8 +343,41 @@
     }
   }
 
+  function rampNativeVolume(from, to, durationSec) {
+    if (nativeFadeTimer) {
+      clearInterval(nativeFadeTimer);
+      nativeFadeTimer = null;
+    }
+    if (!audioEl) return;
+    const startVal = clamp(from, 0, 1);
+    const endVal = clamp(to, 0, 1);
+    const ms = Math.max(0, Math.round((Number(durationSec) || 0) * 1000));
+    if (ms < 60) {
+      try { audioEl.volume = endVal; } catch {}
+      return;
+    }
+    const startAt = Date.now();
+    try { audioEl.volume = startVal; } catch {}
+    nativeFadeTimer = setInterval(() => {
+      if (!audioEl) {
+        clearInterval(nativeFadeTimer);
+        nativeFadeTimer = null;
+        return;
+      }
+      const t = Math.min(1, (Date.now() - startAt) / ms);
+      try { audioEl.volume = clamp(startVal + (endVal - startVal) * t, 0, 1); } catch {}
+      if (t >= 1) {
+        clearInterval(nativeFadeTimer);
+        nativeFadeTimer = null;
+      }
+    }, 50);
+  }
+
   function resetMasterGain(smoothSec = 0) {
-    if (!masterGain || !audioCtx) return;
+    if (!masterGain || !audioCtx) {
+      if (isMobileEnv && audioEl) rampNativeVolume(audioEl.volume, 1, smoothSec);
+      return;
+    }
     const now = audioCtx.currentTime;
     try {
       masterGain.gain.cancelScheduledValues(now);
@@ -297,14 +393,18 @@
   function fadeInForNewTrack() {
     crossfadeTriggeredKey = '';
     prewarmedKey = '';
-    if (state.crossfadeSeconds > 0 && masterGain && audioCtx) {
-      const now = audioCtx.currentTime;
+    if (state.crossfadeSeconds > 0) {
       const dur = Math.min(2.2, Math.max(0.45, state.crossfadeSeconds * 0.65));
-      try {
-        masterGain.gain.cancelScheduledValues(now);
-        masterGain.gain.setValueAtTime(0.06, now);
-        masterGain.gain.linearRampToValueAtTime(1.0, now + dur);
-      } catch {}
+      if (masterGain && audioCtx) {
+        const now = audioCtx.currentTime;
+        try {
+          masterGain.gain.cancelScheduledValues(now);
+          masterGain.gain.setValueAtTime(0.06, now);
+          masterGain.gain.linearRampToValueAtTime(1.0, now + dur);
+        } catch {}
+      } else if (isMobileEnv && audioEl) {
+        rampNativeVolume(0.08, 1.0, dur);
+      }
     } else {
       resetMasterGain(0);
     }
@@ -326,14 +426,16 @@
     const cf = state.crossfadeSeconds;
     if (cf > 0 && !info.isRepeatOne && dur > cf + 6 && remaining > 0.15 && remaining <= cf && crossfadeTriggeredKey !== trackKey) {
       crossfadeTriggeredKey = trackKey;
+      const fadeDur = Math.max(0.5, cf * 0.72);
       if (masterGain && audioCtx) {
         const now = audioCtx.currentTime;
-        const fadeDur = Math.max(0.5, cf * 0.72);
         try {
           masterGain.gain.cancelScheduledValues(now);
           masterGain.gain.setValueAtTime(masterGain.gain.value || 1, now);
           masterGain.gain.linearRampToValueAtTime(0.06, now + fadeDur);
         } catch {}
+      } else if (isMobileEnv && audioEl) {
+        rampNativeVolume(audioEl.volume, 0.06, fadeDur);
       }
       if (typeof info.onCrossfadeTrigger === 'function') {
         info.onCrossfadeTrigger();
@@ -349,8 +451,9 @@
     sleepEndMs = 0;
     state.sleepMode = null;
     state.sleepRemainingSec = 0;
-    if (masterGain && audioCtx && (!audioEl || audioEl.paused === false)) {
-      resetMasterGain(0.25);
+    if (!audioEl || audioEl.paused === false) {
+      if (masterGain && audioCtx) resetMasterGain(0.25);
+      else if (isMobileEnv && audioEl) rampNativeVolume(audioEl.volume, 1, 0.25);
     }
     if (typeof sleepCallbacks.onTick === 'function') {
       sleepCallbacks.onTick(0, null);
@@ -378,10 +481,16 @@
     sleepInterval = setInterval(() => {
       const rem = Math.max(0, Math.ceil((sleepEndMs - Date.now()) / 1000));
       state.sleepRemainingSec = rem;
-      if (rem <= 8 && rem > 0 && masterGain && audioCtx && audioEl && !audioEl.paused) {
-        try {
-          masterGain.gain.setTargetAtTime(Math.max(0.04, rem / 8), audioCtx.currentTime, 0.25);
-        } catch {}
+      if (rem <= 8 && rem > 0 && audioEl && !audioEl.paused) {
+        if (masterGain && audioCtx) {
+          try {
+            masterGain.gain.setTargetAtTime(Math.max(0.04, rem / 8), audioCtx.currentTime, 0.25);
+          } catch {}
+        } else if (isMobileEnv) {
+          try {
+            audioEl.volume = clamp(rem / 8, 0.05, 1);
+          } catch {}
+        }
       }
       if (typeof sleepCallbacks.onTick === 'function') {
         sleepCallbacks.onTick(rem, state.sleepMode);
@@ -420,14 +529,35 @@
     return false;
   }
 
-  function readThemeRgb() {
+  function readThemeRgb(nowMs) {
+    if (nowMs - cachedThemeAt < 600) return cachedThemeRgb;
+    cachedThemeAt = nowMs;
     try {
-      const raw = getComputedStyle(document.documentElement).getPropertyValue('--cover-rgb').trim();
-      if (raw && /^\d+,\s*\d+,\s*\d+$/.test(raw)) return raw;
-      const accentRgb = getComputedStyle(document.documentElement).getPropertyValue('--cover-accent-rgb').trim();
-      if (accentRgb && /^\d+\s*,\s*\d+\s*,\s*\d+$/.test(accentRgb)) return accentRgb;
+      const styles = getComputedStyle(document.documentElement);
+      const raw = styles.getPropertyValue('--cover-rgb').trim();
+      if (raw && /^\d+,\s*\d+,\s*\d+$/.test(raw)) {
+        cachedThemeRgb = raw;
+        return raw;
+      }
+      const accentRgb = styles.getPropertyValue('--cover-accent-rgb').trim();
+      if (accentRgb && /^\d+\s*,\s*\d+\s*,\s*\d+$/.test(accentRgb)) {
+        cachedThemeRgb = accentRgb;
+        return accentRgb;
+      }
     } catch {}
-    return '181, 122, 255';
+    return cachedThemeRgb;
+  }
+
+  function isVisualizerCanvasVisible(canvas) {
+    if (!canvas || !canvas.isConnected || canvas.offsetWidth <= 0 || canvas.offsetHeight <= 0) return false;
+    if (canvas.offsetParent === null) return false;
+    if (isMobileEnv) {
+      const np = canvas.closest('#nowPlayingModal');
+      if (np && !np.classList.contains('open')) return false;
+      const panel = canvas.closest('.m-np-panel');
+      if (panel && !panel.classList.contains('active')) return false;
+    }
+    return true;
   }
 
   function drawVisualizerFrame() {
@@ -435,18 +565,25 @@
     if (!state.visualizerEnabled || document.hidden || !audioEl || audioEl.paused) {
       return;
     }
-    const activeOnes = visualizers.filter((v) => v.canvas && v.canvas.isConnected && v.canvas.offsetWidth > 0);
+    const activeOnes = visualizers.filter((v) => isVisualizerCanvasVisible(v.canvas));
     if (!activeOnes.length) return;
+
+    const nowMs = Date.now();
+    if (isMobileEnv && nowMs - lastVisDrawMs < 44) {
+      visRafId = global.requestAnimationFrame(drawVisualizerFrame);
+      return;
+    }
+    lastVisDrawMs = nowMs;
 
     if (analyser && freqData) {
       analyser.getByteFrequencyData(freqData);
     }
-    visPhase += 0.08;
-    const rgb = readThemeRgb();
+    visPhase += isMobileEnv ? 0.14 : 0.08;
+    const rgb = readThemeRgb(nowMs);
 
     activeOnes.forEach((v) => {
       const canvas = v.canvas;
-      const dpr = Math.min(2, global.devicePixelRatio || 1);
+      const dpr = isMobileEnv ? 1 : Math.min(2, global.devicePixelRatio || 1);
       const targetW = Math.max(120, Math.floor(canvas.offsetWidth * dpr));
       const targetH = Math.max(28, Math.floor(canvas.offsetHeight * dpr));
       if (canvas.width !== targetW || canvas.height !== targetH) {
@@ -497,7 +634,7 @@
   function startVisualizerLoop() {
     if (visRafId) return;
     if (!state.visualizerEnabled || document.hidden || !audioEl || audioEl.paused) return;
-    const hasVisible = visualizers.some((v) => v.canvas && v.canvas.isConnected && v.canvas.offsetWidth > 0);
+    const hasVisible = visualizers.some((v) => isVisualizerCanvasVisible(v.canvas));
     if (!hasVisible) return;
     visRafId = global.requestAnimationFrame(drawVisualizerFrame);
   }
@@ -509,6 +646,20 @@
       visualizers.push({ canvas, bars: options.bars || 28 });
     }
     startVisualizerLoop();
+  }
+
+  function getAudioRmsLevel() {
+    if (!analyser || !audioCtx || audioCtx.state !== 'running') return -1;
+    if (!timeData || timeData.length !== analyser.fftSize) {
+      timeData = new Uint8Array(analyser.fftSize);
+    }
+    analyser.getByteTimeDomainData(timeData);
+    let sumSq = 0;
+    for (let i = 0; i < timeData.length; i += 1) {
+      const v = (timeData[i] - 128) / 128;
+      sumSq += v * v;
+    }
+    return Math.sqrt(sumSq / timeData.length);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -530,9 +681,12 @@
     EQ_PRESETS,
     MOOD_PRESETS,
     init,
+    initIfNeeded,
+    hasActiveDsp,
     resume,
     reapplyToAudio,
     getAudioContext: () => audioCtx,
+    getAudioRmsLevel,
     getState: () => ({ ...state, eqBands: [...state.eqBands] }),
     getBandsMeta: formatFreqBands,
     setEqBands,

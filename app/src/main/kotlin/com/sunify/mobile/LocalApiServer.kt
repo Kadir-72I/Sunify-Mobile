@@ -4,17 +4,24 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import fi.iki.elonen.NanoHTTPD
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.round
 
 class LocalApiServer(
     private val context: Context,
@@ -23,6 +30,7 @@ class LocalApiServer(
 ) : NanoHTTPD("127.0.0.1", port) {
     private val coverColorCache = ConcurrentHashMap<String, JSONObject>()
     private val translationCache = ConcurrentHashMap<String, JSONArray>()
+    private val sponsorBlockCache = ConcurrentHashMap<String, JSONArray>()
 
     private fun jsonResponse(status: Response.Status, body: JSONObject): Response {
         val bytes = body.toString().toByteArray(Charsets.UTF_8)
@@ -133,6 +141,8 @@ class LocalApiServer(
                     jsonResponse(Response.Status.OK, LyricsService.fetchLyrics(title, artist, duration, source))
                 }
 
+                uri == "/api/lyrics-sync-offset" -> jsonResponse(Response.Status.OK, computeLyricsSyncOffset(params))
+
                 uri == "/api/audio-stream" || uri == "/api/stream" -> handleAudioStream(session, params)
 
                 uri == "/api/audio-ready" -> jsonResponse(
@@ -166,49 +176,49 @@ class LocalApiServer(
                 }
 
                 uri == "/api/local-downloads" -> {
-                    val tracks = JSONArray()
-                    audioService.downloadsDir.listFiles()?.filter { it.isFile }?.forEach { file ->
-                        val base = file.nameWithoutExtension
-                        val parts = base.split("_", limit = 2)
-                        val artist = parts.getOrNull(0).orEmpty().ifEmpty { "Yerel" }
-                        val title = parts.getOrNull(1).orEmpty().ifEmpty { base }
-                        tracks.put(JSONObject().apply {
-                            put("title", title)
-                            put("artist", artist)
-                            put("isLocal", true)
-                            put("size", file.length())
-                            put("localUrl", "/api/library/file?name=${java.net.URLEncoder.encode(file.name, "UTF-8")}")
-                        })
-                    }
-                    jsonResponse(Response.Status.OK, JSONObject().put("tracks", tracks))
+                    jsonResponse(Response.Status.OK, JSONObject().put("tracks", audioService.listDownloadedTracks()))
                 }
 
                 uri == "/api/library/file" -> {
-                    val name = params["name"].orEmpty()
-                    val file = File(audioService.downloadsDir, File(name).name)
-                    if (!file.exists()) return errorResponse(Response.Status.NOT_FOUND, "Dosya bulunamadı.")
-                    serveFileWithRange(session, file, "audio/mp4")
+                    val uriParam = params["uri"].orEmpty()
+                    val nameParam = params["name"].orEmpty()
+                    val (resolvedUri, resolvedFile) = audioService.resolveDownloadFileOrUri(uriParam, nameParam)
+                    val mime = if (nameParam.endsWith(".m4a", ignoreCase = true)) "audio/mp4" else "audio/mpeg"
+                    when {
+                        resolvedFile != null && resolvedFile.exists() -> serveFileWithRange(session, resolvedFile, mime)
+                        resolvedUri != null -> serveUriWithRange(session, resolvedUri, mime)
+                        else -> errorResponse(Response.Status.NOT_FOUND, "Dosya bulunamadı.")
+                    }
                 }
 
                 uri == "/api/save-track-locally" -> {
                     val body = readJsonBody(session)
-                    val file = audioService.saveTrackLocally(
+                    val saved = audioService.saveTrackLocally(
                         body.optString("id"),
                         body.optString("title"),
                         body.optString("artist"),
-                        body.optString("query")
+                        body.optString("query"),
+                        body.optString("thumbnail")
                     )
+                    val localUrl = if (saved.uriString.startsWith("content://")) {
+                        "/api/library/file?uri=${URLEncoder.encode(saved.uriString, "UTF-8")}&name=${URLEncoder.encode(saved.fileName, "UTF-8")}"
+                    } else {
+                        "/api/library/file?name=${URLEncoder.encode(saved.fileName, "UTF-8")}"
+                    }
                     jsonResponse(
                         Response.Status.OK,
                         JSONObject()
                             .put("success", true)
-                            .put("localUrl", "/api/library/file?name=${java.net.URLEncoder.encode(file.name, "UTF-8")}")
+                            .put("fileName", saved.fileName)
+                            .put("displayPath", saved.displayPath)
+                            .put("format", "mp3")
+                            .put("localUrl", localUrl)
                     )
                 }
 
                 uri == "/api/storage/stats" -> {
                     val cacheBytes = audioService.cacheDir.listFiles()?.sumOf { it.length() } ?: 0L
-                    val dlBytes = audioService.downloadsDir.listFiles()?.sumOf { it.length() } ?: 0L
+                    val dlBytes = audioService.getTotalDownloadsBytes()
                     jsonResponse(
                         Response.Status.OK,
                         JSONObject()
@@ -349,7 +359,7 @@ class LocalApiServer(
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36")
         if (!rangeHeader.isNullOrBlank()) reqBuilder.header("Range", rangeHeader)
 
-        val upstream = OkHttpDownloader.sharedClient.newCall(reqBuilder.build()).execute()
+        val upstream = OkHttpDownloader.streamClient.newCall(reqBuilder.build()).execute()
         if (!upstream.isSuccessful && upstream.code != 206) {
             upstream.close()
             return errorResponse(Response.Status.INTERNAL_ERROR, "Ses akışı başlatılamadı (${upstream.code}).")
@@ -358,7 +368,20 @@ class LocalApiServer(
         val status = if (upstream.code == 206) Response.Status.PARTIAL_CONTENT else Response.Status.OK
         val contentType = upstream.header("Content-Type") ?: stream.mimeType
         val contentLength = upstream.header("Content-Length")?.toLongOrNull() ?: -1L
-        val bodyStream = upstream.body?.byteStream() ?: return errorResponse(Response.Status.INTERNAL_ERROR, "Boş ses akışı.")
+        val rawStream = upstream.body?.byteStream()
+        if (rawStream == null) {
+            upstream.close()
+            return errorResponse(Response.Status.INTERNAL_ERROR, "Boş ses akışı.")
+        }
+        val bodyStream = object : BufferedInputStream(rawStream, 65536) {
+            override fun close() {
+                try {
+                    super.close()
+                } finally {
+                    runCatching { upstream.close() }
+                }
+            }
+        }
 
         val resp = if (contentLength >= 0) {
             newFixedLengthResponse(status, contentType, bodyStream, contentLength)
@@ -371,25 +394,185 @@ class LocalApiServer(
         return resp
     }
 
+    private fun skipFully(stream: InputStream, bytesToSkip: Long) {
+        var remaining = bytesToSkip
+        while (remaining > 0L) {
+            val skipped = stream.skip(remaining)
+            if (skipped > 0L) {
+                remaining -= skipped
+            } else {
+                if (stream.read() < 0) break
+                remaining -= 1L
+            }
+        }
+    }
+
     private fun serveFileWithRange(session: IHTTPSession, file: File, mime: String): Response {
         val len = file.length()
         val range = session.headers["range"]
-        if (range != null && range.startsWith("bytes=")) {
+        if (range != null && range.startsWith("bytes=") && len > 0L) {
             val parts = range.removePrefix("bytes=").split("-")
-            val start = parts.getOrNull(0)?.toLongOrNull() ?: 0L
-            val end = parts.getOrNull(1)?.toLongOrNull() ?: (len - 1)
-            val chunkLen = (end - start + 1).coerceAtLeast(1L)
-            val fis = file.inputStream()
-            fis.skip(start)
+            val start = (parts.getOrNull(0)?.toLongOrNull() ?: 0L).coerceIn(0L, max(0L, len - 1L))
+            val end = (parts.getOrNull(1)?.toLongOrNull() ?: (len - 1L)).coerceIn(start, len - 1L)
+            val chunkLen = (end - start + 1L).coerceAtLeast(1L)
+            val fis = BufferedInputStream(file.inputStream(), 65536)
+            skipFully(fis, start)
             return newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, fis, chunkLen).apply {
                 addHeader("Content-Range", "bytes $start-$end/$len")
                 addHeader("Accept-Ranges", "bytes")
                 addHeader("Access-Control-Allow-Origin", "*")
             }
         }
-        return newFixedLengthResponse(Response.Status.OK, mime, file.inputStream(), len).apply {
+        return newFixedLengthResponse(Response.Status.OK, mime, BufferedInputStream(file.inputStream(), 65536), len).apply {
             addHeader("Accept-Ranges", "bytes")
             addHeader("Access-Control-Allow-Origin", "*")
+        }
+    }
+
+    private fun serveUriWithRange(session: IHTTPSession, uri: Uri, mime: String): Response {
+        val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            ?: return errorResponse(Response.Status.NOT_FOUND, "Ses dosyası açılamadı.")
+        val len = pfd.statSize
+        if (len <= 0L) {
+            val stream = ParcelFileDescriptor.AutoCloseInputStream(pfd)
+            return newChunkedResponse(Response.Status.OK, mime, BufferedInputStream(stream, 65536)).apply {
+                addHeader("Accept-Ranges", "none")
+                addHeader("Access-Control-Allow-Origin", "*")
+            }
+        }
+        val stream = BufferedInputStream(ParcelFileDescriptor.AutoCloseInputStream(pfd), 65536)
+        val range = session.headers["range"]
+        if (range != null && range.startsWith("bytes=")) {
+            val parts = range.removePrefix("bytes=").split("-")
+            val start = (parts.getOrNull(0)?.toLongOrNull() ?: 0L).coerceIn(0L, max(0L, len - 1L))
+            val end = (parts.getOrNull(1)?.toLongOrNull() ?: (len - 1L)).coerceIn(start, len - 1L)
+            val chunkLen = (end - start + 1L).coerceAtLeast(1L)
+            skipFully(stream, start)
+            return newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, stream, chunkLen).apply {
+                addHeader("Content-Range", "bytes $start-$end/$len")
+                addHeader("Accept-Ranges", "bytes")
+                addHeader("Access-Control-Allow-Origin", "*")
+            }
+        }
+        return newFixedLengthResponse(Response.Status.OK, mime, stream, len).apply {
+            addHeader("Accept-Ranges", "bytes")
+            addHeader("Access-Control-Allow-Origin", "*")
+        }
+    }
+
+    private fun round1(v: Double): Double = round(v * 10.0) / 10.0
+
+    private fun fetchSponsorBlockSegments(videoId: String): JSONArray {
+        if (!Regex("^[A-Za-z0-9_-]{11}$").matches(videoId)) return JSONArray()
+        sponsorBlockCache[videoId]?.let { return it }
+
+        var result = JSONArray()
+        runCatching {
+            val url = "https://sponsor.ajay.app/api/skipSegments?videoID=$videoId&categories=" +
+                URLEncoder.encode("[\"music_offtopic\",\"intro\",\"outro\"]", "UTF-8")
+            val shortClient = OkHttpDownloader.sharedClient.newBuilder()
+                .readTimeout(2500, TimeUnit.MILLISECONDS)
+                .connectTimeout(2500, TimeUnit.MILLISECONDS)
+                .build()
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Sunify/1.2.1")
+                .build()
+            shortClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val raw = resp.body?.string().orEmpty()
+                    val parsed = runCatching { JSONArray(raw) }.getOrNull()
+                    if (parsed != null) result = parsed
+                }
+            }
+        }
+        if (sponsorBlockCache.size > 300) sponsorBlockCache.clear()
+        sponsorBlockCache[videoId] = result
+        return result
+    }
+
+    private fun computeLyricsSyncOffset(params: Map<String, String>): JSONObject {
+        val videoId = params["videoId"].orEmpty().trim()
+        val actualDuration = params["actualDuration"]?.toDoubleOrNull() ?: 0.0
+        val lyricsDuration = params["lyricsDuration"]?.toDoubleOrNull() ?: 0.0
+        val firstLyricTime = params["firstLyricTime"]?.toDoubleOrNull() ?: -1.0
+        val lastLyricTime = params["lastLyricTime"]?.toDoubleOrNull() ?: 0.0
+
+        var introEnd = 0.0
+        var outroSec = 0.0
+        if (Regex("^[A-Za-z0-9_-]{11}$").matches(videoId)) {
+            val segs = fetchSponsorBlockSegments(videoId)
+            for (i in 0 until segs.length()) {
+                val seg = segs.optJSONObject(i) ?: continue
+                val cat = seg.optString("category")
+                val range = seg.optJSONArray("segment") ?: continue
+                if (range.length() < 2) continue
+                val segStart = range.optDouble(0, 0.0)
+                val segEnd = range.optDouble(1, 0.0)
+                val segLen = max(0.0, segEnd - segStart)
+                if ((cat == "music_offtopic" || cat == "intro")
+                    && segStart <= 2.5
+                    && segEnd in 1.0..60.0
+                    && (actualDuration <= 0.0 || segEnd < actualDuration * 0.45)
+                ) {
+                    introEnd = max(introEnd, segEnd)
+                } else if ((cat == "music_offtopic" || cat == "outro")
+                    && ((actualDuration > 0.0 && segStart >= actualDuration * 0.65) || segStart > 30.0)
+                ) {
+                    outroSec += segLen
+                }
+            }
+        }
+
+        outroSec = round1(outroSec)
+        if (introEnd >= 1.0) {
+            val shift = round1(introEnd)
+            return JSONObject().apply {
+                put("offsetSec", shift)
+                put("source", "sponsorblock")
+                put("confidence", "high")
+                put("reason", String.format(Locale.US, "Video girişi algılandı (+%.1fs)", shift))
+                put("outroSec", outroSec)
+            }
+        }
+
+        val durDelta = if (actualDuration > 15.0 && lyricsDuration > 15.0) actualDuration - lyricsDuration else 0.0
+        val netDelta = durDelta - outroSec
+
+        if (outroSec >= 2.0 && netDelta > -1.5 && netDelta < 1.5) {
+            return JSONObject().apply {
+                put("offsetSec", 0.0)
+                put("source", "outro_only")
+                put("confidence", "high")
+                put("reason", "Fark şarkı sonunda (outro), sözler senkron")
+                put("outroSec", outroSec)
+            }
+        }
+
+        if (netDelta in -35.0..-1.8) {
+            val runsPastEnd = lastLyricTime > 0.0 && actualDuration > 15.0 && lastLyricTime > actualDuration - 1.5
+            val largeEarlyGap = abs(netDelta) >= 3.0 && firstLyricTime > abs(netDelta) + 0.5
+            if (runsPastEnd || largeEarlyGap) {
+                val maxAdvance = if (firstLyricTime >= 0.0) max(0.0, firstLyricTime - 0.4) else 35.0
+                val shift = round1(max(-35.0, max(-maxAdvance, netDelta)))
+                if (shift <= -1.0) {
+                    return JSONObject().apply {
+                        put("offsetSec", shift)
+                        put("source", "duration_trim")
+                        put("confidence", "medium")
+                        put("reason", String.format(Locale.US, "Kısa/radyo sürümü algılandı (%.1fs)", shift))
+                        put("outroSec", outroSec)
+                    }
+                }
+            }
+        }
+
+        return JSONObject().apply {
+            put("offsetSec", 0.0)
+            put("source", "none")
+            put("confidence", "low")
+            put("reason", "Sözler standart zamanlamada")
+            put("outroSec", outroSec)
         }
     }
 

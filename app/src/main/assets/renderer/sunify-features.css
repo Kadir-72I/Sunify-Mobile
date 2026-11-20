@@ -343,3 +343,86 @@
   object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.22);
 }
+
+.offset-auto-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.14);
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.28);
+  cursor: pointer;
+}
+.offset-auto-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.offset-auto-text > span {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+}
+.offset-auto-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.offset-auto-row input[type='checkbox'] {
+  accent-color: rgb(var(--cover-rgb, 181, 122, 255));
+  width: 17px;
+  height: 17px;
+  cursor: pointer;
+}
+.offset-align-btn {
+  width: 100%;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.45);
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.20);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.offset-align-btn:hover {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.34);
+}
+.lyrics-align-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.22);
+  border: 1px solid rgba(var(--cover-rgb, 181, 122, 255), 0.55);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.lyrics-align-banner[hidden] {
+  display: none;
+}
+.lyrics-lines-container.lyrics-aligning .lyric-line {
+  border-radius: 10px;
+  padding-inline: 10px;
+  outline: 1px dashed rgba(var(--cover-rgb, 181, 122, 255), 0.42);
+}
+.lyrics-lines-container.lyrics-aligning .lyric-line:hover {
+  background: rgba(var(--cover-rgb, 181, 122, 255), 0.22);
+  color: #fff;
+}

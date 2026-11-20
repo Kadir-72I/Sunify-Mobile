@@ -289,7 +289,7 @@ object LyricsService {
                 bestScore = effective
                 val gap = if (duration > 0 && candDuration > 0) abs(duration - candDuration) else 999.0
                 bestEntry = ScoredLyrics(
-                    formatResult(chosenText, hasSync, if (hasSync) "LRCLIB · Senkron" else "LRCLIB"),
+                    formatResult(chosenText, hasSync, if (hasSync) "LRCLIB · Senkron" else "LRCLIB", candDuration, gap),
                     s,
                     hasSync,
                     gap
@@ -338,6 +338,7 @@ object LyricsService {
         var bestId = 0L
         var bestScore = -1.0
         var bestGap = 999.0
+        var bestDur = 0.0
         for (i in 0 until songs.length()) {
             val song = songs.optJSONObject(i) ?: continue
             val id = song.optLong("id", 0L)
@@ -360,6 +361,7 @@ object LyricsService {
             if (s >= minSynced && s > bestScore) {
                 bestScore = s
                 bestId = id
+                bestDur = dur
                 bestGap = if (duration > 0 && dur > 0) abs(duration - dur) else 999.0
             }
         }
@@ -374,7 +376,7 @@ object LyricsService {
         val synced = hasLrcTimestamps(cleaned)
         if (!synced && bestScore < minPlain) return null
         return ScoredLyrics(
-            formatResult(cleaned, synced, if (synced) "NetEase · Senkron" else "NetEase"),
+            formatResult(cleaned, synced, if (synced) "NetEase · Senkron" else "NetEase", bestDur, bestGap),
             bestScore,
             synced,
             bestGap
@@ -399,6 +401,7 @@ object LyricsService {
         var bestCand: JSONObject? = null
         var bestScore = -1.0
         var bestGap = 999.0
+        var bestCandDur = 0.0
         for (i in 0 until minOf(8, candidates.length())) {
             val cand = candidates.optJSONObject(i) ?: continue
             val candDur = cand.optDouble("duration", 0.0) / 1000.0
@@ -415,6 +418,7 @@ object LyricsService {
             if (s >= minSynced && s > bestScore) {
                 bestScore = s
                 bestCand = cand
+                bestCandDur = candDur
                 bestGap = if (duration > 0 && candDur > 0) abs(duration - candDur) else 999.0
             }
         }
@@ -431,7 +435,7 @@ object LyricsService {
         val synced = hasLrcTimestamps(decoded)
         if (!synced && bestScore < minPlain) return null
         return ScoredLyrics(
-            formatResult(decoded, synced, if (synced) "KuGou · Senkron" else "KuGou"),
+            formatResult(decoded, synced, if (synced) "KuGou · Senkron" else "KuGou", bestCandDur, bestGap),
             bestScore,
             synced,
             bestGap
@@ -520,7 +524,13 @@ object LyricsService {
         return ScoredLyrics(formatResult(clean, false, "ŞarkıSözüm"), 0.62, false, 999.0)
     }
 
-    private fun formatResult(lyrics: String, synced: Boolean, sourceLabel: String): JSONObject {
+    private fun formatResult(
+        lyrics: String,
+        synced: Boolean,
+        sourceLabel: String,
+        lyricsDuration: Double = 0.0,
+        durationGap: Double = 0.0
+    ): JSONObject {
         val wordSynced = Regex("<\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?>").containsMatchIn(lyrics)
         return JSONObject().apply {
             put("lyrics", lyrics)
@@ -528,6 +538,8 @@ object LyricsService {
             put("source", sourceLabel)
             put("lyricsType", if (wordSynced) "word" else if (synced) "synced" else "plain")
             put("wordSynced", wordSynced)
+            put("lyricsDuration", kotlin.math.round(max(0.0, lyricsDuration) * 100.0) / 100.0)
+            put("durationGap", kotlin.math.round(max(0.0, durationGap) * 100.0) / 100.0)
             put("fallbackSources", JSONArray(allSources))
         }
     }

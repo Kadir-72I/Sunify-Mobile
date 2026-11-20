@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
 
         webView = WebView(this).apply {
             setBackgroundColor(Color.parseColor("#0A0910"))
+            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -73,9 +74,8 @@ class MainActivity : AppCompatActivity() {
                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                cacheMode = WebSettings.LOAD_NO_CACHE
+                cacheMode = WebSettings.LOAD_DEFAULT
             }
-            clearCache(true)
             addJavascriptInterface(SunifyAndroidBridge(), "SunifyAndroidBridge")
             webChromeClient = object : WebChromeClient() {
                 override fun onShowFileChooser(

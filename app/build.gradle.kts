@@ -57,4 +57,5 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.github.teamnewpipe:NewPipeExtractor:v0.27.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("io.github.lijieqing:lame:1.0.1032")
 }

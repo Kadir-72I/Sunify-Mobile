@@ -24,9 +24,16 @@
     lyrics: [],
     lyricsSource: 'auto',
     lyricsOffset: 0,
+    lyricsOffsetIsAuto: false,
+    autoLyricsSync: localStorage.getItem('sunify_auto_lyrics_sync') !== 'false',
+    lyricsAlignMode: false,
+    lyricsDuration: 0,
     lyricsFetchedDuration: 0,
     lyricsDurationRefetched: false,
+    lastAutoSyncKey: '',
     lastLyricIdx: -1,
+    lyricDomRows: [],
+    dailyMixCache: { key: '', fetchedAt: 0, mixes: null, loading: false },
     syncTimer: null,
     syncIncludeStructure: false,
     cloudReady: false,
@@ -385,12 +392,31 @@
     rebuildRecentFromAnalytics();
   }
 
+  let localSaveTimer = null;
+  function flushLocalStorageNow() {
+    if (localSaveTimer) {
+      clearTimeout(localSaveTimer);
+      localSaveTimer = null;
+    }
+    try {
+      localStorage.setItem(accountKey('sunify_playlists'), JSON.stringify(state.playlists));
+      localStorage.setItem(accountKey('sunify_liked'), JSON.stringify(state.likedTracks));
+      localStorage.setItem(accountKey('sunify_listening_stats'), JSON.stringify(state.listeningStats));
+      localStorage.setItem(accountKey('sunify_recent_tracks'), JSON.stringify(state.recentTracks.slice(0, 14)));
+    } catch {}
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && localSaveTimer) flushLocalStorageNow();
+  });
+  window.addEventListener('pagehide', () => {
+    if (localSaveTimer) flushLocalStorageNow();
+  });
+
   function saveLocalData(pushCloud = true, includeStructure = true) {
     if (includeStructure) syncPlaylistMetaIntoStats();
-    localStorage.setItem(accountKey('sunify_playlists'), JSON.stringify(state.playlists));
-    localStorage.setItem(accountKey('sunify_liked'), JSON.stringify(state.likedTracks));
-    localStorage.setItem(accountKey('sunify_listening_stats'), JSON.stringify(state.listeningStats));
-    localStorage.setItem(accountKey('sunify_recent_tracks'), JSON.stringify(state.recentTracks.slice(0, 14)));
+    if (localSaveTimer) clearTimeout(localSaveTimer);
+    localSaveTimer = setTimeout(flushLocalStorageNow, 250);
     if (includeStructure) state.pendingStructEdit = true;
     if (pushCloud && state.auth.accessToken && state.cloudReady) scheduleCloudPush(includeStructure);
   }
@@ -835,7 +861,146 @@
     if (count) count.textContent = `1–4 satır seç (${state.lyricsSelectedLines.length}/4)`;
   }
 
+  function readMobileLyricOffsets() {
+    try { return JSON.parse(localStorage.getItem('sunify_mobile_lyric_offsets') || '{}') || {}; } catch { return {}; }
+  }
+  function mobileLyricOffsetKey(track) {
+    return `${String(track?.artist || '').trim().toLowerCase()}|${String(track?.title || '').trim().toLowerCase()}`;
+  }
+  function hasStoredMobileLyricOffset(track) {
+    if (!track || !track.title) return false;
+    return Object.prototype.hasOwnProperty.call(readMobileLyricOffsets(), mobileLyricOffsetKey(track));
+  }
+  function getStoredMobileLyricOffset(track) {
+    const val = Number(readMobileLyricOffsets()[mobileLyricOffsetKey(track)]);
+    return Number.isFinite(val) ? val : 0;
+  }
+  function saveMobileLyricOffset(track, value, remove = false) {
+    if (!track || !track.title) return;
+    const map = readMobileLyricOffsets();
+    const k = mobileLyricOffsetKey(track);
+    if (remove) delete map[k];
+    else map[k] = Math.max(-45, Math.min(45, Math.round((Number(value) || 0) * 10) / 10));
+    const keys = Object.keys(map);
+    if (keys.length > 300) keys.slice(0, keys.length - 300).forEach((old) => delete map[old]);
+    try { localStorage.setItem('sunify_mobile_lyric_offsets', JSON.stringify(map)); } catch {}
+  }
+
+  function setMobileLyricsAlignMode(enabled) {
+    state.lyricsAlignMode = Boolean(enabled);
+    $('npLyricsAlignBtn')?.classList.toggle('active', state.lyricsAlignMode);
+    $('npLyricsBox')?.classList.toggle('lyrics-aligning', state.lyricsAlignMode);
+    if ($('npLyricsAlignBar')) $('npLyricsAlignBar').hidden = !state.lyricsAlignMode;
+  }
+
+  function syncMobileLyricsDom(cur, forceScroll = false) {
+    if (!state.lyrics.length || !state.lyricDomRows.length) return;
+    const effectiveTime = (Number(cur) || 0) + state.lyricsOffset;
+    let low = 0;
+    let high = state.lyrics.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (effectiveTime >= state.lyrics[mid].time) low = mid + 1;
+      else high = mid;
+    }
+    const activeIdx = low - 1;
+    const prevIdx = state.lastLyricIdx;
+
+    if (activeIdx !== prevIdx || forceScroll) {
+      const start = Math.max(0, Math.min(prevIdx < 0 ? 0 : prevIdx, activeIdx < 0 ? 0 : activeIdx));
+      const end = forceScroll
+        ? state.lyricDomRows.length - 1
+        : Math.min(state.lyricDomRows.length - 1, Math.max(prevIdx, activeIdx));
+      for (let i = start; i <= end; i += 1) {
+        const row = state.lyricDomRows[i];
+        if (!row) continue;
+        row.el.classList.toggle('active', i === activeIdx);
+        row.el.classList.toggle('passed', activeIdx >= 0 && i < activeIdx);
+        if (i !== activeIdx && row.words.length) {
+          for (let wi = 0; wi < row.words.length; wi += 1) {
+            row.words[wi].classList.remove('spoken');
+          }
+        }
+      }
+      state.lastLyricIdx = activeIdx;
+      if (activeIdx >= 0) {
+        state.lyricDomRows[activeIdx]?.el?.scrollIntoView({ behavior: forceScroll ? 'auto' : 'smooth', block: 'center' });
+      }
+    }
+
+    if (activeIdx >= 0) {
+      const row = state.lyricDomRows[activeIdx];
+      const lineWords = state.lyrics[activeIdx]?.words || [];
+      if (row && row.words.length) {
+        for (let wi = 0; wi < row.words.length; wi += 1) {
+          const w = lineWords[wi];
+          row.words[wi].classList.toggle('spoken', Boolean(w && effectiveTime >= w.startTime));
+        }
+      }
+    }
+  }
+
+  function updateMobileOffsetUi(opts = {}) {
+    state.lyricsOffset = Math.max(-45, Math.min(45, Math.round((Number(state.lyricsOffset) || 0) * 10) / 10));
+    const valEl = $('npLyricsOffsetVal');
+    if (valEl) {
+      const fmt = `${state.lyricsOffset >= 0 ? '+' : ''}${state.lyricsOffset.toFixed(1)}s`;
+      valEl.textContent = state.lyricsOffsetIsAuto && Math.abs(state.lyricsOffset) >= 0.1 ? `Oto ${fmt}` : fmt;
+    }
+    if (opts.clearManual) saveMobileLyricOffset(state.currentTrack, 0, true);
+    else if (opts.persistManual) saveMobileLyricOffset(state.currentTrack, state.lyricsOffset, false);
+    if ($('nowPlayingModal')?.classList.contains('open') && $('npLyricsPanel')?.classList.contains('active')) {
+      syncMobileLyricsDom(audio.currentTime || 0, true);
+    }
+  }
+
+  async function runMobileAutoLyricsSync() {
+    if (!state.autoLyricsSync || !state.lyrics.length || !state.currentTrack) return;
+    if (hasStoredMobileLyricOffset(state.currentTrack)) return;
+
+    const actualDuration = Number(audio.duration) || Number(state.currentTrack.duration) || 0;
+    const firstLyricTime = Number(state.lyrics[0]?.time) || 0;
+    const lastLyricTime = Number(state.lyrics[state.lyrics.length - 1]?.time) || 0;
+    const videoId = String(state.currentTrack.id || '');
+    const key = `${mobileLyricOffsetKey(state.currentTrack)}|${videoId}|${Math.round(actualDuration)}|${Math.round(state.lyricsDuration)}`;
+    if (key === state.lastAutoSyncKey) return;
+    state.lastAutoSyncKey = key;
+
+    const snapKey = mobileLyricOffsetKey(state.currentTrack);
+    try {
+      const qs = new URLSearchParams({
+        videoId,
+        actualDuration: String(actualDuration || 0),
+        lyricsDuration: String(state.lyricsDuration || 0),
+        firstLyricTime: String(firstLyricTime),
+        lastLyricTime: String(lastLyricTime),
+        audioOnsetSec: '-1',
+      });
+      const res = await api(`/api/lyrics-sync-offset?${qs.toString()}`);
+      if (!state.currentTrack || mobileLyricOffsetKey(state.currentTrack) !== snapKey) return;
+      if (hasStoredMobileLyricOffset(state.currentTrack) || !state.autoLyricsSync) return;
+      // Mobil formül: effectiveTime = cur + state.lyricsOffset -> canonical gecikmenin ters işareti!
+      state.lyricsOffset = Math.round(-(Number(res.offsetSec) || 0) * 10) / 10;
+      state.lyricsOffsetIsAuto = true;
+      updateMobileOffsetUi({ persistManual: false });
+      if (Math.abs(Number(res.offsetSec) || 0) >= 0.8 && res.reason) {
+        const badge = $('npLyricsSourceBadge');
+        if (badge && !badge.textContent.includes('· Oto')) badge.textContent = `${badge.textContent} · Oto`;
+      }
+    } catch {}
+  }
+
   function handleLyricLineTap(el, idx) {
+    if (state.lyricsAlignMode) {
+      if (el.dataset.time !== undefined) {
+        state.lyricsOffset = Math.round((Number(el.dataset.time) - (audio.currentTime || 0)) * 10) / 10;
+        state.lyricsOffsetIsAuto = false;
+        setMobileLyricsAlignMode(false);
+        updateMobileOffsetUi({ persistManual: true });
+        showToast(`Sözler hizalandı (${state.lyricsOffset >= 0 ? '+' : ''}${state.lyricsOffset.toFixed(1)}s)`);
+      }
+      return;
+    }
     if (state.lyricsCardMode) {
       const pos = state.lyricsSelectedLines.indexOf(idx);
       if (pos >= 0) {
@@ -920,7 +1085,15 @@
     const badge = $('npLyricsSourceBadge');
     const source = sourceOverride || state.lyricsSource || 'auto';
     state.lyrics = [];
+    state.lyricDomRows = [];
     state.lastLyricIdx = -1;
+    state.lyricsDuration = 0;
+    state.lastAutoSyncKey = '';
+    setMobileLyricsAlignMode(false);
+    const hasManual = hasStoredMobileLyricOffset(track);
+    state.lyricsOffset = hasManual ? getStoredMobileLyricOffset(track) : 0;
+    state.lyricsOffsetIsAuto = false;
+    updateMobileOffsetUi({ persistManual: false });
     state.lyricsTranslated = false;
     state.lyricsTranslations = [];
     state.lyricsCardMode = false;
@@ -939,6 +1112,8 @@
         source,
       });
       const data = await api(`/api/lyrics?${qs.toString()}`);
+      if (!state.currentTrack || trackKey(state.currentTrack) !== trackKey(track)) return;
+      state.lyricsDuration = Number(data.lyricsDuration) || 0;
       const rawLyrics = String(data.lyrics || '').trim();
       badge.textContent = data.source || 'Bulunamadı';
       if (!rawLyrics) {
@@ -959,9 +1134,12 @@
               return `<div class="m-lyric-line" data-idx="${i}" data-time="${line.time}">${wordsHtml || escapeHtml(line.text)}</div>`;
             })
             .join('');
-          box.querySelectorAll('.m-lyric-line').forEach((el, idx) => {
+          state.lyricDomRows = Array.from(box.querySelectorAll('.m-lyric-line')).map((el, idx) => {
             el.onclick = () => handleLyricLineTap(el, idx);
+            return { el, words: Array.from(el.querySelectorAll('.m-lyric-word')) };
           });
+          syncMobileLyricsDom(audio.currentTime || 0, true);
+          runMobileAutoLyricsSync();
           return;
         }
       }
@@ -1008,7 +1186,7 @@
     updatePlayerUI();
     applyCoverAdaptiveColor(track?.thumbnail || '').catch(() => {});
 
-    window.SunifyAudioFX?.init(audio);
+    window.SunifyAudioFX?.initIfNeeded?.(audio);
     window.SunifyAudioFX?.resume();
 
     const streamUrl = track.localUrl
@@ -1305,18 +1483,21 @@
       if (!opts.silent) showToast("Yalnızca Wi-Fi'da indirme açık.");
       return false;
     }
-    if (!opts.silent) showToast('İndiriliyor...');
+    if (!opts.silent) showToast('MP3 hazırlanıp indiriliyor...');
     try {
-      await api('/api/save-track-locally', {
+      const res = await api('/api/save-track-locally', {
         method: 'POST',
         body: JSON.stringify({
           id: track.id || '',
           title: track.title || '',
           artist: track.artist || '',
+          thumbnail: track.thumbnail || '',
           query: `${track.artist || ''} ${track.title || ''}`.trim(),
         }),
       });
-      if (!opts.silent) showToast('Çevrimdışı için kaydedildi.');
+      if (!opts.silent) {
+        showToast(res?.displayPath ? `${res.displayPath} konumuna MP3 kaydedildi.` : 'İndirilenler/Sunify klasörüne MP3 kaydedildi.');
+      }
       if (!opts.skipReload) loadOfflineTracks();
       return true;
     } catch (e) {
@@ -1365,59 +1546,46 @@
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([name]) => name);
   }
 
-  function renderDailyMixes() {
+  function renderDailyMixes(allowRemoteFetch = true) {
     const topTracks = getTopListenedTracks(25);
     const similarSeeds = collectSeeds(6);
     const topArtists = collectKnownArtists(6);
     const allKnownArtists = collectKnownArtists(25);
-    const mixes = [
-      { id: 'mix-1', badge: 'MIX 1', title: 'En çok dinlediklerin', sub: `${topTracks.length} şarkı`, tracks: topTracks, cover: topTracks[0]?.thumbnail || FALLBACK_ART },
-      { id: 'mix-2', badge: 'MIX 2', title: 'Sana benzer şarkılar', sub: '25 şarkılık Daily Mix', tracks: null, mode: 'similar', seeds: similarSeeds, cover: state.likedTracks[0]?.thumbnail || FALLBACK_ART },
-      { id: 'mix-3', badge: 'MIX 3', title: 'Bugün en çok dinlenenler', sub: 'Sunify topluluğu · bugün', tracks: null, daily: true, cover: FALLBACK_ART },
-      { id: 'mix-4', badge: 'MIX 4', title: 'Favori sanatçıların', sub: topArtists.slice(0, 2).join(', ') || 'En çok dinlediklerinden', tracks: null, artists: topArtists, cover: topTracks[1]?.thumbnail || FALLBACK_ART },
-      { id: 'mix-5', badge: 'MIX 5', title: 'Yeni keşifler', sub: 'Tarzına uygun yeni keşifler', tracks: null, mode: 'discovery', seeds: similarSeeds, excludeArtists: allKnownArtists, cover: FALLBACK_ART },
-    ];
+    const cacheKey = `${similarSeeds.map((s) => s.title).join('|')}__${topArtists.join('|')}`;
+    const cacheFresh = state.dailyMixCache.mixes
+      && state.dailyMixCache.key === cacheKey
+      && Date.now() - state.dailyMixCache.fetchedAt < 5 * 60 * 1000;
+
+    const mixes = cacheFresh
+      ? state.dailyMixCache.mixes.map((m, idx) => (idx === 0
+        ? { ...m, tracks: topTracks, sub: `${topTracks.length} şarkı`, cover: topTracks[0]?.thumbnail || FALLBACK_ART }
+        : m))
+      : [
+          { id: 'mix-1', badge: 'MIX 1', title: 'En çok dinlediklerin', sub: `${topTracks.length} şarkı`, tracks: topTracks, cover: topTracks[0]?.thumbnail || FALLBACK_ART },
+          { id: 'mix-2', badge: 'MIX 2', title: 'Sana benzer şarkılar', sub: '25 şarkılık Daily Mix', tracks: null, mode: 'similar', seeds: similarSeeds, cover: state.likedTracks[0]?.thumbnail || FALLBACK_ART },
+          { id: 'mix-3', badge: 'MIX 3', title: 'Bugün en çok dinlenenler', sub: 'Sunify topluluğu · bugün', tracks: null, daily: true, cover: FALLBACK_ART },
+          { id: 'mix-4', badge: 'MIX 4', title: 'Favori sanatçıların', sub: topArtists.slice(0, 2).join(', ') || 'En çok dinlediklerinden', tracks: null, artists: topArtists, cover: topTracks[1]?.thumbnail || FALLBACK_ART },
+          { id: 'mix-5', badge: 'MIX 5', title: 'Yeni keşifler', sub: 'Tarzına uygun yeni keşifler', tracks: null, mode: 'discovery', seeds: similarSeeds, excludeArtists: allKnownArtists, cover: FALLBACK_ART },
+        ];
 
     const el = $('homeDailyMixes');
     el.innerHTML = mixes
-      .map(
-        (m, i) => `
+      .map((m, i) => {
+        const displaySub = Array.isArray(m.tracks) && i > 0 && m.tracks.length
+          ? `${m.tracks.length} şarkı · ${[...new Set(m.tracks.map((t) => t.artist).filter(Boolean))].slice(0, 3).join(', ') || m.sub}`
+          : m.sub;
+        const displayCover = (Array.isArray(m.tracks) && m.tracks[0]?.thumbnail) || m.cover;
+        return `
         <div class="m-card" data-mi="${i}">
           <div class="m-card-cover-wrap">
-            <img id="mixImg_${i}" src="${escapeHtml(m.cover)}" alt="" />
+            <img id="mixImg_${i}" src="${escapeHtml(displayCover)}" alt="" />
             <span class="m-mix-badge">${m.badge}</span>
           </div>
           <div class="m-card-title">${escapeHtml(m.title)}</div>
-          <div class="m-card-sub" id="mixSub_${i}">${escapeHtml(m.sub)}</div>
-        </div>`
-      )
+          <div class="m-card-sub" id="mixSub_${i}">${escapeHtml(displaySub)}</div>
+        </div>`;
+      })
       .join('');
-
-    mixes.forEach(async (m, i) => {
-      if (!Array.isArray(m.tracks)) {
-        try {
-          let data;
-          if (m.daily) {
-            data = await api('/api/discover/daily-top?limit=25');
-            if (!Array.isArray(data?.tracks) || !data.tracks.length) {
-              data = await api('/api/discover/top?limit=25');
-            }
-          } else if (m.artists?.length) {
-            data = await api(`/api/daily-mix/artist-tracks?artists=${encodeURIComponent(JSON.stringify(m.artists))}`);
-          } else if (m.seeds?.length) {
-            const qs = new URLSearchParams({ seeds: JSON.stringify(m.seeds), mode: m.mode || 'similar' });
-            if (m.excludeArtists?.length) qs.set('excludeArtists', JSON.stringify(m.excludeArtists));
-            data = await api(`/api/recommendations?${qs.toString()}`);
-          }
-          m.tracks = (data?.tracks || []).slice(0, 25);
-          if (m.tracks[0]?.thumbnail && $(`mixImg_${i}`)) $(`mixImg_${i}`).src = m.tracks[0].thumbnail;
-          const artists = [...new Set(m.tracks.map((t) => t.artist).filter(Boolean))].slice(0, 3).join(', ');
-          if ($(`mixSub_${i}`)) $(`mixSub_${i}`).textContent = m.tracks.length ? `${m.tracks.length} şarkı · ${artists || m.sub}` : 'Henüz yeterli veri yok';
-        } catch {
-          m.tracks = [];
-        }
-      }
-    });
 
     el.querySelectorAll('.m-card').forEach((c) => {
       c.onclick = () => {
@@ -1426,6 +1594,43 @@
         openDetail({ id: mix.id, name: mix.title, subtitle: `${mix.tracks.length} parça`, cover: mix.tracks[0]?.thumbnail || mix.cover, tracks: mix.tracks, readonly: true });
       };
     });
+
+    if (!allowRemoteFetch || cacheFresh || state.dailyMixCache.loading) return;
+    state.dailyMixCache.loading = true;
+
+    (async () => {
+      try {
+        for (let i = 0; i < mixes.length; i += 1) {
+          const m = mixes[i];
+          if (Array.isArray(m.tracks)) continue;
+          try {
+            let data;
+            if (m.daily) {
+              data = await api('/api/discover/daily-top?limit=25');
+              if (!Array.isArray(data?.tracks) || !data.tracks.length) {
+                data = await api('/api/discover/top?limit=25');
+              }
+            } else if (m.artists?.length) {
+              data = await api(`/api/daily-mix/artist-tracks?artists=${encodeURIComponent(JSON.stringify(m.artists))}`);
+            } else if (m.seeds?.length) {
+              const qs = new URLSearchParams({ seeds: JSON.stringify(m.seeds), mode: m.mode || 'similar' });
+              if (m.excludeArtists?.length) qs.set('excludeArtists', JSON.stringify(m.excludeArtists));
+              data = await api(`/api/recommendations?${qs.toString()}`);
+            }
+            m.tracks = (data?.tracks || []).slice(0, 25);
+            if (m.tracks[0]?.thumbnail && $(`mixImg_${i}`)) $(`mixImg_${i}`).src = m.tracks[0].thumbnail;
+            const artists = [...new Set(m.tracks.map((t) => t.artist).filter(Boolean))].slice(0, 3).join(', ');
+            if ($(`mixSub_${i}`)) $(`mixSub_${i}`).textContent = m.tracks.length ? `${m.tracks.length} şarkı · ${artists || m.sub}` : 'Henüz yeterli veri yok';
+          } catch {
+            m.tracks = [];
+          }
+          await new Promise((r) => setTimeout(r, 350));
+        }
+        state.dailyMixCache = { key: cacheKey, fetchedAt: Date.now(), mixes, loading: false };
+      } finally {
+        state.dailyMixCache.loading = false;
+      }
+    })();
   }
 
   function renderContinueRow() {
@@ -1923,7 +2128,7 @@
   }
 
   function openAudioFxSheet(initialTab = 'eq') {
-    window.SunifyAudioFX?.init(audio);
+    window.SunifyAudioFX?.initIfNeeded?.(audio);
     window.SunifyAudioFX?.resume();
     let activeTab = initialTab;
 
@@ -2380,11 +2585,22 @@
     showToast(`${done}/${targets.length} şarkı çevrimdışı kaydedildi.`);
   }
 
-  function renderAll() {
-    renderDailyMixes();
+  function renderAll(opts = {}) {
+    renderDailyMixes(!opts.deferMixFetch);
     renderContinueRow();
     renderHomeStats();
     renderLibrary();
+  }
+
+  function syncNowPlayingModalNow() {
+    const dur = audio.duration || state.currentTrack?.duration || 0;
+    const cur = audio.currentTime || 0;
+    $('npSeekSlider').value = dur > 0 ? Math.round((cur / dur) * 1000) : 0;
+    $('npCurrentTime').textContent = fmtTime(cur);
+    $('npDuration').textContent = fmtTime(dur);
+    if ($('npLyricsPanel')?.classList.contains('active')) {
+      syncMobileLyricsDom(cur, true);
+    }
   }
 
   function bindEvents() {
@@ -2402,6 +2618,7 @@
 
     $('miniOpenNowPlaying').onclick = () => {
       $('nowPlayingModal').classList.add('open');
+      syncNowPlayingModalNow();
       window.SunifyAudioFX?.startVisualizerLoop();
     };
     $('npCloseBtn').onclick = () => $('nowPlayingModal').classList.remove('open');
@@ -2429,6 +2646,7 @@
           else playPrev();
         } else if (dy < -55 && Math.abs(dy) > Math.abs(dx)) {
           $('nowPlayingModal').classList.add('open');
+          syncNowPlayingModalNow();
           window.SunifyAudioFX?.startVisualizerLoop();
         }
       }, { passive: true });
@@ -2440,6 +2658,11 @@
         t.classList.add('active');
         $('npCoverPanel').classList.toggle('active', t.dataset.npTab === 'cover');
         $('npLyricsPanel').classList.toggle('active', t.dataset.npTab === 'lyrics');
+        if (t.dataset.npTab === 'lyrics') {
+          syncMobileLyricsDom(audio.currentTime || 0, true);
+        } else {
+          window.SunifyAudioFX?.startVisualizerLoop();
+        }
       };
     });
 
@@ -2505,14 +2728,54 @@
       state.lyricsSource = e.target.value;
       if (state.currentTrack) loadLyricsFor(state.currentTrack, state.lyricsSource);
     };
+    const autoSyncBtn = $('npLyricsAutoSyncBtn');
+    if (autoSyncBtn) {
+      autoSyncBtn.classList.toggle('active', state.autoLyricsSync);
+      autoSyncBtn.onclick = () => {
+        state.autoLyricsSync = !state.autoLyricsSync;
+        try { localStorage.setItem('sunify_auto_lyrics_sync', String(state.autoLyricsSync)); } catch {}
+        autoSyncBtn.classList.toggle('active', state.autoLyricsSync);
+        if (state.autoLyricsSync) {
+          state.lastAutoSyncKey = '';
+          saveMobileLyricOffset(state.currentTrack, 0, true);
+          showToast('Otomatik söz senkronu açıldı.');
+          runMobileAutoLyricsSync();
+        } else {
+          state.lyricsOffsetIsAuto = false;
+          updateMobileOffsetUi({ persistManual: false });
+          showToast('Otomatik söz senkronu kapatıldı.');
+        }
+      };
+    }
+    if ($('npLyricsAlignBtn')) {
+      $('npLyricsAlignBtn').onclick = () => {
+        if (!state.lyrics.length) return showToast('Hizalanacak senkron söz yok.');
+        setMobileLyricsAlignMode(!state.lyricsAlignMode);
+      };
+    }
+    if ($('npLyricsAlignCancelBtn')) {
+      $('npLyricsAlignCancelBtn').onclick = () => setMobileLyricsAlignMode(false);
+    }
     $('npLyricsMinusBtn').onclick = () => {
       state.lyricsOffset = Math.round((state.lyricsOffset - 0.5) * 10) / 10;
-      $('npLyricsOffsetVal').textContent = `${state.lyricsOffset >= 0 ? '+' : ''}${state.lyricsOffset.toFixed(1)}s`;
+      state.lyricsOffsetIsAuto = false;
+      updateMobileOffsetUi({ persistManual: true });
     };
     $('npLyricsPlusBtn').onclick = () => {
       state.lyricsOffset = Math.round((state.lyricsOffset + 0.5) * 10) / 10;
-      $('npLyricsOffsetVal').textContent = `${state.lyricsOffset >= 0 ? '+' : ''}${state.lyricsOffset.toFixed(1)}s`;
+      state.lyricsOffsetIsAuto = false;
+      updateMobileOffsetUi({ persistManual: true });
     };
+    if ($('npLyricsOffsetVal')) {
+      $('npLyricsOffsetVal').onclick = () => {
+        state.lyricsOffset = 0;
+        state.lyricsOffsetIsAuto = false;
+        state.lastAutoSyncKey = '';
+        updateMobileOffsetUi({ clearManual: true });
+        if (state.autoLyricsSync) runMobileAutoLyricsSync();
+        showToast('Söz gecikmesi sıfırlandı.');
+      };
+    }
 
     $('npSeekSlider').oninput = (e) => {
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
@@ -2555,9 +2818,13 @@
       state.lastTimeUpdateMs = audio.paused ? 0 : nowMs;
       const pct = dur > 0 ? Math.min(100, (cur / dur) * 100) : 0;
       $('miniProgressFill').style.width = `${pct}%`;
-      $('npSeekSlider').value = dur > 0 ? Math.round((cur / dur) * 1000) : 0;
-      $('npCurrentTime').textContent = fmtTime(cur);
-      $('npDuration').textContent = fmtTime(dur);
+
+      const npOpen = $('nowPlayingModal')?.classList.contains('open');
+      if (npOpen) {
+        $('npSeekSlider').value = dur > 0 ? Math.round((cur / dur) * 1000) : 0;
+        $('npCurrentTime').textContent = fmtTime(cur);
+        $('npDuration').textContent = fmtTime(dur);
+      }
 
       if (!audio.paused && nowMs - state.lastNotifPushAt >= 4000) {
         updateNotification();
@@ -2573,38 +2840,19 @@
         },
       });
 
-      if (state.lyrics.length) {
-        const effectiveTime = cur + state.lyricsOffset;
-        let activeIdx = -1;
-        for (let i = 0; i < state.lyrics.length; i++) {
-          if (effectiveTime >= state.lyrics[i].time) activeIdx = i;
-        }
-        const rows = $('npLyricsBox').querySelectorAll('.m-lyric-line');
-        rows.forEach((el, i) => {
-          el.classList.toggle('active', i === activeIdx);
-          el.classList.toggle('passed', activeIdx >= 0 && i < activeIdx);
-          if (i === activeIdx) {
-            const lineWords = state.lyrics[i]?.words || [];
-            el.querySelectorAll('.m-lyric-word').forEach((wEl, wi) => {
-              const w = lineWords[wi];
-              wEl.classList.toggle('spoken', Boolean(w && effectiveTime >= w.startTime));
-            });
-          } else {
-            el.querySelectorAll('.m-lyric-word.spoken').forEach((wEl) => wEl.classList.remove('spoken'));
-          }
-        });
-        if (activeIdx >= 0 && activeIdx !== state.lastLyricIdx) {
-          state.lastLyricIdx = activeIdx;
-          rows[activeIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+      if (npOpen && state.lyrics.length && $('npLyricsPanel')?.classList.contains('active')) {
+        syncMobileLyricsDom(cur, false);
       }
     });
     audio.addEventListener('loadedmetadata', () => {
       const real = Number(audio.duration);
-      if (!state.currentTrack || !Number.isFinite(real) || real <= 0 || state.lyricsDurationRefetched) return;
-      if (state.lyricsFetchedDuration > 0 && Math.abs(state.lyricsFetchedDuration - real) <= 3) return;
-      state.lyricsDurationRefetched = true;
-      loadLyricsFor(state.currentTrack, state.lyricsSource);
+      if (!state.currentTrack || !Number.isFinite(real) || real <= 0) return;
+      if (!state.lyricsDurationRefetched && (state.lyricsFetchedDuration <= 0 || Math.abs(state.lyricsFetchedDuration - real) > 3)) {
+        state.lyricsDurationRefetched = true;
+        loadLyricsFor(state.currentTrack, state.lyricsSource);
+        return;
+      }
+      runMobileAutoLyricsSync();
     });
     audio.addEventListener('ended', () => {
       const endedTrack = state.currentTrack;
@@ -2875,15 +3123,16 @@
     if (wifiEl) wifiEl.checked = localStorage.getItem('sunify_wifi_only_dl') === 'true';
     window.SunifyAudioFX?.attachVisualizer($('npVisualizerCanvas'), { bars: 26 });
     updatePlayerUI();
-    renderAll();
+    renderAll({ deferMixFetch: true });
     try {
       const ver = bridge?.getAppVersion ? String(bridge.getAppVersion()) : '1.2.1';
       $('settingsVersionText').textContent = `v${ver}`;
     } catch {}
     await initAuth();
     loadOfflineTracks().then(renderLibrary);
-    loadRecommendations(false);
     loadDailyChart();
+    setTimeout(() => loadRecommendations(false), 300);
+    setTimeout(() => renderDailyMixes(true), 800);
   }
 
   document.addEventListener('DOMContentLoaded', boot);

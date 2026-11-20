@@ -1,5 +1,6 @@
 package com.sunify.mobile
 
+import okhttp3.Dispatcher
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -58,8 +59,26 @@ class OkHttpDownloader private constructor(
 
     companion object {
         val sharedClient: OkHttpClient by lazy {
+            val dispatcher = Dispatcher().apply {
+                maxRequests = 48
+                maxRequestsPerHost = 16
+            }
             OkHttpClient.Builder()
+                .dispatcher(dispatcher)
                 .readTimeout(30, TimeUnit.SECONDS)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .build()
+        }
+
+        val streamClient: OkHttpClient by lazy {
+            val dispatcher = Dispatcher().apply {
+                maxRequests = 16
+                maxRequestsPerHost = 8
+            }
+            OkHttpClient.Builder()
+                .dispatcher(dispatcher)
+                .readTimeout(45, TimeUnit.SECONDS)
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .build()

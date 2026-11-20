@@ -377,11 +377,13 @@
             <option value="sarkisozum">ŞarkıSözüm</option>
           </select>
           <span class="m-lyrics-badge" id="npLyricsSourceBadge">—</span>
+          <button type="button" class="m-lyrics-mini-btn active" id="npLyricsAutoSyncBtn" title="Otomatik söz senkronu">Oto</button>
+          <button type="button" class="m-lyrics-mini-btn" id="npLyricsAlignBtn" title="Çalan satıra dokunarak hizala"><i class="fa-solid fa-crosshairs"></i> Hizala</button>
           <button type="button" class="m-lyrics-mini-btn" id="npLyricsTranslateBtn" title="Türkçe çeviri">TR</button>
           <button type="button" class="m-lyrics-mini-btn" id="npLyricsCardModeBtn" title="Söz kartı oluştur"><i class="fa-solid fa-image"></i> Kart</button>
           <div class="m-lyrics-offset">
             <button type="button" id="npLyricsMinusBtn" aria-label="Gecikme azalt">-0.5s</button>
-            <span id="npLyricsOffsetVal">0.0s</span>
+            <span id="npLyricsOffsetVal" title="Sıfırlamak için dokun">0.0s</span>
             <button type="button" id="npLyricsPlusBtn" aria-label="Gecikme artır">+0.5s</button>
           </div>
         </div>
@@ -391,6 +393,10 @@
             <button class="m-glass-btn primary" id="npLyricsCardShareBtn" type="button">Kartı Paylaş</button>
             <button class="m-glass-btn" id="npLyricsCardCancelBtn" type="button">İptal</button>
           </div>
+        </div>
+        <div class="sfx-lyric-card-bar" id="npLyricsAlignBar" hidden>
+          <span>Şu an söylenen satıra dokunun</span>
+          <button class="m-glass-btn" id="npLyricsAlignCancelBtn" type="button">İptal</button>
         </div>
         <div class="m-lyrics-box" id="npLyricsBox">
           <div class="m-empty-card">Şarkı sözleri yükleniyor...</div>
